@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS leads (
   session_id TEXT UNIQUE NOT NULL,
   lead_score INTEGER DEFAULT 0 CHECK (lead_score >= 0 AND lead_score <= 100),
   pipeline_status TEXT DEFAULT 'Visitor' CHECK (
-    pipeline_status IN ('Visitor', 'Engaged', 'Qualified', 'Hot Lead')
+    pipeline_status IN ('Visitor', 'Engaged', 'Qualified', 'Hot Lead', 'Approached')
   ),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   last_active TIMESTAMPTZ DEFAULT NOW(),

@@ -94,6 +94,17 @@ class ChatResponse(BaseModel):
     response: str
     sources: List[str]
 
+class DraftEmailRequest(BaseModel):
+    session_id: str
+
+class DraftEmailResponse(BaseModel):
+    subject: str
+    body: str
+
+class UpdateLeadStatusRequest(BaseModel):
+    pipeline_status: str
+
+
 # ============================================
 # System Prompt - Help First, Qualify Last
 # ============================================
@@ -254,6 +265,150 @@ async def get_leads():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/draft_email", response_model=DraftEmailResponse)
+async def draft_email(request: DraftEmailRequest):
+    """
+    Generate a personalized follow-up email for a lead using GPT-OSS-120B.
+    Uses chat history and lead data to create a contextual, helpful email.
+    """
+    try:
+        print(f"\n📧 Drafting email for session: {request.session_id}")
+        
+        # Fetch lead data
+        lead_result = supabase_client.table("leads").select("*").eq("session_id", request.session_id).execute()
+        
+        if not lead_result.data:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        
+        lead = lead_result.data[0]
+        
+        # Fetch conversation history
+        conv_result = supabase_client.table("conversations").select("*").eq("session_id", request.session_id).order("created_at").execute()
+        
+        # Format conversation
+        conversation_text = ""
+        if conv_result.data:
+            for msg in conv_result.data:
+                role = "Customer" if msg['role'] == 'user' else "Assistant"
+                conversation_text += f"{role}: {msg['message']}\n"
+        else:
+            conversation_text = "No conversation history available."
+        
+        # Build email generation prompt with STRICT anti-hallucination rules
+        email_prompt = f"""You are a B2B Sales Representative for Team Defaulters, a cloud infrastructure company.
+
+LEAD INFORMATION:
+- Name: {lead.get('name') or 'N/A'}
+- Company: {lead.get('company') or 'N/A'}
+- Role: {lead.get('role') or 'N/A'}
+- Lead Score: {lead.get('lead_score')}/100 ({lead.get('pipeline_status')})
+- Needs: {lead.get('needs') or 'N/A'}
+
+CONVERSATION HISTORY:
+{conversation_text}
+
+🚫 CRITICAL ANTI-HALLUCINATION RULES:
+
+1. **DO NOT make up contact details**
+   ❌ NO: "Alex Patel", "alex@teamdefaulters.com", "calendar link", "Senior Solutions Engineer"
+   ✅ YES: Sign as "Team Defaulters" ONLY
+
+2. **ONLY reference what was ACTUALLY discussed in the conversation**
+   ❌ NO: "C2.large with T4 GPUs" (if not mentioned)
+   ✅ YES: "the GPU instances we discussed" (if mentioned)
+
+3. **DO NOT invent specific numbers or details**
+   ❌ NO: "$15,000 in credits", "30-minute call", "early next week"
+   ✅ YES: "startup credits", "a call", "soon"
+
+4. **Stick STRICTLY to the conversation**
+   - Only mention topics that appear in the chat history above
+   - If they asked about pricing, mention pricing
+   - If they didn't ask about it, DON'T mention it
+
+TASK:
+Write a short, professional follow-up email.
+
+REQUIREMENTS:
+1. Reference ONLY topics from the actual conversation above
+2. Tone: Helpful, NOT pushy
+3. Length: 2-3 paragraphs maximum
+4. Use their name: {lead.get('name') or 'there'}
+5. Simple call to action: "Let me know if you'd like to discuss further"
+6. Signature: "Best regards,\\nTeam Defaulters" (NO names, NO emails, NO titles)
+7. Format: Return ONLY valid JSON with "subject" and "body" fields
+
+EXAMPLE (for someone who asked about uptime and monitoring):
+{{
+  "subject": "Following up on Infrastructure Discussion",
+  "body": "Hi {lead.get('name') or 'there'},\\n\\nThank you for discussing your infrastructure needs with us. Based on our conversation about uptime requirements and monitoring, I wanted to follow up.\\n\\nWe can help you achieve your uptime goals with our infrastructure solutions. I'd be happy to provide more details and answer any questions.\\n\\nLet me know if you'd like to continue the conversation.\\n\\nBest regards,\\nTeam Defaulters"
+}}
+
+Generate the email now (JSON only, no additional text):"""
+
+        # Initialize email drafting model (GPT-OSS-120B)
+        email_model = ChatGroq(
+            groq_api_key=GROQ_API_KEY,
+            model_name="openai/gpt-oss-120b",
+            temperature=0.7,
+            max_tokens=800
+        )
+        
+        print("🤖 Calling GPT-OSS-120B for email generation...")
+        response = email_model.invoke([SystemMessage(content=email_prompt)])
+        
+        # Parse JSON response
+        import json
+        raw_content = response.content.strip()
+        
+        # Strip markdown code blocks if present
+        if raw_content.startswith("```"):
+            lines = raw_content.split('\n')
+            json_content = '\n'.join(lines[1:-1])
+        else:
+            json_content = raw_content
+        
+        email_data = json.loads(json_content)
+        
+        print(f"✅ Email generated: {email_data['subject']}")
+        
+        return DraftEmailResponse(
+            subject=email_data['subject'],
+            body=email_data['body']
+        )
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ Failed to parse email JSON: {e}")
+        print(f"Raw response: {response.content}")
+        raise HTTPException(status_code=500, detail="Failed to generate email. Invalid response format.")
+    except Exception as e:
+        print(f"❌ Error drafting email: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/leads/{session_id}")
+async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest):
+    """Update lead pipeline status (e.g., mark as Approached)"""
+    try:
+        print(f"\n📝 Updating lead status: {session_id} -> {request.pipeline_status}")
+        
+        result = supabase_client.table("leads").update({
+            "pipeline_status": request.pipeline_status,
+            "updated_at": "NOW()"
+        }).eq("session_id", session_id).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        
+        print(f"✅ Lead status updated to: {request.pipeline_status}")
+        return {"success": True, "lead": result.data[0]}
+        
+    except Exception as e:
+        print(f"❌ Error updating lead status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
