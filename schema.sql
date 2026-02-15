@@ -94,7 +94,11 @@ CREATE TABLE IF NOT EXISTS leads (
   email TEXT,
   phone TEXT,
   role TEXT,
-  needs TEXT
+  needs TEXT,
+  
+  -- Email Intent (for dynamic email generation)
+  email_intent TEXT,
+  email_context TEXT
 );
 
 -- Indexes for fast lookups

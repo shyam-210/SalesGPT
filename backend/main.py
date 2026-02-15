@@ -18,6 +18,7 @@ from langchain_core.messages import SystemMessage
 from supabase import create_client, Client
 from backend.judge import analyze_lead
 from backend.extractor import extract_lead_data
+from backend.email_intent_prompts import build_email_prompt
 
 load_dotenv()
 
@@ -57,30 +58,30 @@ app.add_middleware(
 # Initialize AI Models
 # ============================================
 
-print("🤖 Initializing Groq chat model...")
+print("[AI] Initializing Groq chat model...")
 chat_model = ChatGroq(
     groq_api_key=GROQ_API_KEY,
     model_name=CHAT_MODEL,
     temperature=0.7,
     max_tokens=600  # Increased for detailed responses like quotations
 )
-print(f"✅ Groq model initialized: {CHAT_MODEL}")
+print(f"[OK] Groq model initialized: {CHAT_MODEL}")
 
-print("🧠 Loading embedding model...")
+print("[BRAIN] Loading embedding model...")
 embeddings = HuggingFaceEmbeddings(
     model_name=EMBEDDING_MODEL,
     model_kwargs={'device': 'cpu'},
     encode_kwargs={'normalize_embeddings': True}
 )
-print(f"✅ Embedding model loaded: {EMBEDDING_MODEL}")
+print(f"[OK] Embedding model loaded: {EMBEDDING_MODEL}")
 
-print("🔗 Connecting to Supabase...")
+print("[LINK] Connecting to Supabase...")
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-print("✅ Supabase client initialized")
+print("[OK] Supabase client initialized")
 
 # In-memory chat history
 chat_sessions = {}
-print("💾 Chat history storage initialized")
+print("[SAVE] Chat history storage initialized")
 
 # ============================================
 # Pydantic Models
@@ -109,11 +110,11 @@ class UpdateLeadStatusRequest(BaseModel):
 # System Prompt - Help First, Qualify Last
 # ============================================
 
-SYSTEM_PROMPT = """You are Alex, a cloud infrastructure expert at Team Defaulters.
+SYSTEM_PROMPT = """You are a cloud infrastructure expert at Team Defaulters.
 
 YOUR MISSION: Help users solve their cloud infrastructure problems with expert advice.
 
-═══════════════════════════════════════════════════════════
+===========================================================
 WHAT YOU KNOW ABOUT THIS USER:
 {known_info}
 
@@ -122,7 +123,7 @@ CONVERSATION HISTORY:
 
 KNOWLEDGE BASE:
 {context}
-═══════════════════════════════════════════════════════════
+===========================================================
 
 CORE PRINCIPLE: HELP FIRST, QUALIFY LAST
 
@@ -132,40 +133,52 @@ You are an EXPERT FIRST, a salesperson second. When someone asks a technical que
 3. Show your expertise
 4. Build trust by being genuinely helpful
 
-❌ WRONG APPROACH:
+[ERROR] WRONG APPROACH:
 User: "I need resources to deploy LLMs"
 You: "What's your company name?"  ← PUSHY, NOT HELPFUL
 
-✅ RIGHT APPROACH:
+[OK] RIGHT APPROACH:
 User: "I need resources to deploy LLMs"
 You: "For deploying large language models, you'll want our GPU instances. Our G1.large ($3,625/month) has NVIDIA Tesla V100, 8 vCPUs, and 16GB RAM - ideal for inference workloads. For larger models, we have G1.xlarge with A100 GPUs. What size models are you deploying?"
 
-═══════════════════════════════════════════════════════════
+===========================================================
 
 DATA COLLECTION STRATEGY:
 
-🎯 **Natural Questions** (woven into helping):
+[TARGET] **Natural Questions** (woven into helping):
 - "What size models are you deploying?" (to give better rec)
 - "Are you training or just inference?" (to understand needs)
 - "How many requests per second are you expecting?" (to size correctly)
 
 These feel like EXPERT CURIOSITY, not sales interrogation.
 
-🚫 **Don't Ask Directly** (unless conversation is ending):
+[NO] **Don't Ask Directly** (unless conversation is ending):
 - "What company are you with?"
 - "What's your email?"
 - "What's your role?"
 
-📧 **When to Collect Contact Info:**
-ONLY when:
-1. They explicitly ask you to send them something
-2. They sound interested and you want to follow up
-3. The conversation seems to be ending
+[EMAIL] **When User Asks to Send/Mail Something:**
 
-Then ask naturally:
-"I can send you detailed specs and pricing - what's your email?"
+CRITICAL: Collect ALL 4 details in ONE natural question:
+1. Name
+2. Role
+3. Company
+4. Email
 
-═══════════════════════════════════════════════════════════
+Example Flow:
+User: "Can you mail me the pricing?"
+You: "I'd be happy to send you the detailed pricing. Could you share your name, role, company, and email address?"
+
+User: "I'm Shyam, CTO at ChainAI, shyam@chainai.com"
+You: "Perfect, Shyam! Our team will send the enterprise pricing details to shyam@chainai.com within 24 hours."
+
+IMPORTANT:
+- Ask for ALL 4 fields together in one natural question
+- DO NOT say "I've sent" or "I'll send" - you cannot send emails
+- ALWAYS say "Our team will send... within 24 hours"
+- Confirm what you'll send and to which email
+
+===========================================================
 
 MEMORY & CONTEXT:
 
@@ -176,7 +189,7 @@ Use what you learned naturally:
 
 Don't ask for info you already have!
 
-═══════════════════════════════════════════════════════════
+===========================================================
 
 CONVERSATION EXAMPLES:
 
@@ -194,32 +207,32 @@ You: [explains plans]
 User: "What about the startup one?"
 You: "The Startup Program I mentioned gives $5K in credits for companies that haven't raised beyond Series A. This would be perfect for the AI startup you mentioned earlier. The credits work for any service - GPU instances, storage, bandwidth. You can apply at startups.teamdefaulters.com/apply."
 
-═══════════════════════════════════════════════════════════
+===========================================================
 
 CRITICAL ANTI-HALLUCINATION RULES:
 
-🚫 **YOU CANNOT SEND EMAILS** - You are a chatbot, not an email system!
+[NO] **YOU CANNOT SEND EMAILS** - You are a chatbot, not an email system!
 
 When user asks for email/quotation:
-❌ NEVER SAY: "I've sent you...", "I'll send you...", "Email sent to..."
-✅ ALWAYS SAY: "Our team will send you... within 24 hours"
+[ERROR] NEVER SAY: "I've sent you...", "I'll send you...", "Email sent to..."
+[OK] ALWAYS SAY: "Our team will send you... within 24 hours"
 
 EXAMPLES:
 
 User: "Can you email me the details?"
 You: "Our team will send detailed specs and pricing to [email] within 24 hours."
-❌ NOT: "I've sent you the details" or "I'll email you now"
+[ERROR] NOT: "I've sent you the details" or "I'll email you now"
 
 User: "Send me a quotation"
 You collect email, then say:
 You: "Our team will send a detailed quotation to [email] within 24 hours, including pricing, specs, and startup credits."
-❌ NOT: "I've sent the quotation to your email"
+[ERROR] NOT: "I've sent the quotation to your email"
 
 User: "Did you send it?"
 You: "Our sales team handles email follow-ups. They'll reach out to [email] within 24 hours with all the details."
-❌ NOT: "Yes, I sent it"
+[ERROR] NOT: "Yes, I sent it"
 
-═══════════════════════════════════════════════════════════
+===========================================================
 
 KEY RULES:
 
@@ -273,7 +286,7 @@ async def draft_email(request: DraftEmailRequest):
     Uses chat history and lead data to create a contextual, helpful email.
     """
     try:
-        print(f"\n📧 Drafting email for session: {request.session_id}")
+        print(f"\n[EMAIL] Drafting email for session: {request.session_id}")
         
         # Fetch lead data
         lead_result = supabase_client.table("leads").select("*").eq("session_id", request.session_id).execute()
@@ -295,58 +308,17 @@ async def draft_email(request: DraftEmailRequest):
         else:
             conversation_text = "No conversation history available."
         
-        # Build email generation prompt with STRICT anti-hallucination rules
-        email_prompt = f"""You are a B2B Sales Representative for Team Defaulters, a cloud infrastructure company.
-
-LEAD INFORMATION:
-- Name: {lead.get('name') or 'N/A'}
-- Company: {lead.get('company') or 'N/A'}
-- Role: {lead.get('role') or 'N/A'}
-- Lead Score: {lead.get('lead_score')}/100 ({lead.get('pipeline_status')})
-- Needs: {lead.get('needs') or 'N/A'}
-
-CONVERSATION HISTORY:
-{conversation_text}
-
-🚫 CRITICAL ANTI-HALLUCINATION RULES:
-
-1. **DO NOT make up contact details**
-   ❌ NO: "Alex Patel", "alex@teamdefaulters.com", "calendar link", "Senior Solutions Engineer"
-   ✅ YES: Sign as "Team Defaulters" ONLY
-
-2. **ONLY reference what was ACTUALLY discussed in the conversation**
-   ❌ NO: "C2.large with T4 GPUs" (if not mentioned)
-   ✅ YES: "the GPU instances we discussed" (if mentioned)
-
-3. **DO NOT invent specific numbers or details**
-   ❌ NO: "$15,000 in credits", "30-minute call", "early next week"
-   ✅ YES: "startup credits", "a call", "soon"
-
-4. **Stick STRICTLY to the conversation**
-   - Only mention topics that appear in the chat history above
-   - If they asked about pricing, mention pricing
-   - If they didn't ask about it, DON'T mention it
-
-TASK:
-Write a short, professional follow-up email.
-
-REQUIREMENTS:
-1. Reference ONLY topics from the actual conversation above
-2. Tone: Helpful, NOT pushy
-3. Length: 2-3 paragraphs maximum
-4. Use their name: {lead.get('name') or 'there'}
-5. Simple call to action: "Let me know if you'd like to discuss further"
-6. Signature: "Best regards,\\nTeam Defaulters" (NO names, NO emails, NO titles)
-7. Format: Return ONLY valid JSON with "subject" and "body" fields
-
-EXAMPLE (for someone who asked about uptime and monitoring):
-{{
-  "subject": "Following up on Infrastructure Discussion",
-  "body": "Hi {lead.get('name') or 'there'},\\n\\nThank you for discussing your infrastructure needs with us. Based on our conversation about uptime requirements and monitoring, I wanted to follow up.\\n\\nWe can help you achieve your uptime goals with our infrastructure solutions. I'd be happy to provide more details and answer any questions.\\n\\nLet me know if you'd like to continue the conversation.\\n\\nBest regards,\\nTeam Defaulters"
-}}
-
-Generate the email now (JSON only, no additional text):"""
-
+        # Get email intent and context
+        email_intent = lead.get('email_intent', 'general_followup')
+        email_context = lead.get('email_context', '')
+        
+        print(f"[TARGET] Email Intent: {email_intent}")
+        print(f"[NOTE] Context: {email_context}")
+        
+        
+        # Build email prompt using intent and context
+        email_prompt = build_email_prompt(lead, conversation_text, email_intent, email_context)
+        
         # Initialize email drafting model (GPT-OSS-120B)
         email_model = ChatGroq(
             groq_api_key=GROQ_API_KEY,
@@ -355,7 +327,7 @@ Generate the email now (JSON only, no additional text):"""
             max_tokens=800
         )
         
-        print("🤖 Calling GPT-OSS-120B for email generation...")
+        print("[AI] Calling GPT-OSS-120B for email generation...")
         response = email_model.invoke([SystemMessage(content=email_prompt)])
         
         # Parse JSON response
@@ -371,7 +343,7 @@ Generate the email now (JSON only, no additional text):"""
         
         email_data = json.loads(json_content)
         
-        print(f"✅ Email generated: {email_data['subject']}")
+        print(f"[OK] Email generated: {email_data['subject']}")
         
         return DraftEmailResponse(
             subject=email_data['subject'],
@@ -379,11 +351,11 @@ Generate the email now (JSON only, no additional text):"""
         )
         
     except json.JSONDecodeError as e:
-        print(f"❌ Failed to parse email JSON: {e}")
-        print(f"Raw response: {response.content}")
+        print(f"[ERROR] Failed to parse email JSON: {e}")
+        print(f"Raw response: {raw_content[:200]}")
         raise HTTPException(status_code=500, detail="Failed to generate email. Invalid response format.")
     except Exception as e:
-        print(f"❌ Error drafting email: {e}")
+        print(f"[ERROR] Error drafting email: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -392,7 +364,7 @@ Generate the email now (JSON only, no additional text):"""
 async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest):
     """Update lead pipeline status (e.g., mark as Approached)"""
     try:
-        print(f"\n📝 Updating lead status: {session_id} -> {request.pipeline_status}")
+        print(f"\n[NOTE] Updating lead status: {session_id} -> {request.pipeline_status}")
         
         result = supabase_client.table("leads").update({
             "pipeline_status": request.pipeline_status,
@@ -402,11 +374,11 @@ async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest):
         if not result.data:
             raise HTTPException(status_code=404, detail="Lead not found")
         
-        print(f"✅ Lead status updated to: {request.pipeline_status}")
+        print(f"[OK] Lead status updated to: {request.pipeline_status}")
         return {"success": True, "lead": result.data[0]}
         
     except Exception as e:
-        print(f"❌ Error updating lead status: {e}")
+        print(f"[ERROR] Error updating lead status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -429,7 +401,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             "content": request.message
         })
         
-        print(f"\n🔍 Query: {request.message[:50]}...")
+        print(f"\n[SEARCH] Query: {request.message[:50]}...")
         
         # Build conversation history
         history = "\n".join([
@@ -456,7 +428,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             # Combine context with current query
             contextual_query = f"{recent_context}\n\nCurrent question: {request.message}"
             
-            print(f"🔄 Contextual query: {request.message} (with history)")
+            print(f"[REFRESH] Contextual query: {request.message} (with history)")
         else:
             # Use query as-is
             contextual_query = request.message
@@ -478,7 +450,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         ).execute()
         
         docs_data = result.data if result.data else []
-        print(f"📄 Found {len(docs_data)} documents")
+        print(f"[DOC] Found {len(docs_data)} documents")
         
         # Build context and sources
         if docs_data:
@@ -529,7 +501,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             message=request.message
         )
         
-        print("🤖 Generating response...")
+        print("[AI] Generating response...")
         response = chat_model.invoke([SystemMessage(content=prompt)])
         answer = response.content.strip()
         
@@ -539,7 +511,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             "content": answer
         })
         
-        print(f"✅ Response: {answer[:100]}...")
+        print(f"[OK] Response: {answer[:100]}...")
         
         # ============================================
         # SLOW TRACK: Background Tasks
@@ -560,7 +532,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         return ChatResponse(response=answer, sources=sources)
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"[ERROR] Error: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -572,14 +544,14 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 @app.on_event("startup")
 async def startup():
     print("\n" + "="*60)
-    print("🚀 SalesGPT API Starting...")
+    print(" SalesGPT API Starting...")
     print("="*60)
-    print(f"📍 Supabase: {SUPABASE_URL}")
-    print(f"🤖 Chat Model: {CHAT_MODEL}")
-    print(f"🧠 Embedding Model: {EMBEDDING_MODEL}")
+    print(f" Supabase: {SUPABASE_URL}")
+    print(f"[AI] Chat Model: {CHAT_MODEL}")
+    print(f"[BRAIN] Embedding Model: {EMBEDDING_MODEL}")
     print("="*60)
-    print("✅ API Ready!")
-    print("📚 Docs: http://localhost:8000/docs")
+    print("[OK] API Ready!")
+    print(" Docs: http://localhost:8000/docs")
     print("="*60 + "\n")
 
 if __name__ == "__main__":

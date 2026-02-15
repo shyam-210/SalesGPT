@@ -29,8 +29,8 @@ JUDGE_MODEL = os.getenv("JUDGE_MODEL", "openai/gpt-oss-120b")
 judge_model = ChatGroq(
     groq_api_key=GROQ_API_KEY,
     model_name=JUDGE_MODEL,
-    temperature=0.5,  # Allow some creativity in reasoning
-    max_tokens=512
+    temperature=0,
+    max_tokens=1024  # Increased for detailed email_context
 )
 
 # Initialize Supabase Client
@@ -78,6 +78,61 @@ Output: {"score": 68, "stage": "Qualified", "reasoning": "Has budget (Series A),
 Conversation: "I'm the CTO at a fintech company. We're experiencing 200ms latency and need to migrate ASAP. What's your enterprise pricing?"
 Output: {"score": 92, "stage": "Hot Lead", "reasoning": "Authority (CTO), urgent need (ASAP migration), budget signals (enterprise), clear pain point (latency)."}
 
+**ADDITIONAL TASK - EMAIL INTENT EXTRACTION:**
+
+Analyze what the customer is ASKING FOR to determine what kind of follow-up email they need.
+
+**EMAIL INTENT Categories:**
+- "pricing_request" - Asked about pricing, costs, or budget
+- "technical_specs" - Need technical specifications or architecture details
+- "plan_comparison" - Want to compare different plans or instance types
+- "startup_program" - Interested in startup credits or program
+- "custom_solution" - Need custom architecture or proposal
+- "general_followup" - No specific request, just general interest
+
+**EMAIL CONTEXT:** Extract SPECIFIC details the customer asked about:
+
+For pricing_request:
+- Instance types: "G1.xlarge with A100 GPU"
+- Pricing: "$6,325/month" or "$70,900/year"
+- Credits/offers: "$5,000 startup credits"
+- Support: "Professional Support"
+- Discounts: "20% annual discount"
+
+For technical_specs:
+- Instance: "G1.xlarge"
+- GPU: "NVIDIA A100, 40GB VRAM"
+- Compute: "16 vCPUs, 32GB RAM"
+- Storage: "400GB SSD"
+
+Format as concise bullet points (max 2-3 lines):
+"G1.xlarge: $8,700/mo. Startup credits: $5K. Monitoring: $100/mo."
+
+**Updated Output Format:**
+{
+  "score": <0-100>,
+  "stage": "<Visitor|Engaged|Qualified|Hot Lead>",
+  "reasoning": "<BANT assessment>",
+  "email_intent": "<intent category>",
+  "email_context": "<specific details>"
+}
+
+**Examples with Email Intent:**
+
+Conversation: "G1.xlarge is $6,325/month. With $5,000 startup credits, ~$70,900/year. Can you mail me that?"
+Output: {"score": 75, "stage": "Hot Lead", "reasoning": "Requesting pricing via email shows buying intent.", "email_intent": "pricing_request", "email_context": "G1.xlarge: $6,325/mo, ~$70,900/yr. Credits: $5K."}
+
+Conversation: "What's the annual enterprise pricing with 20% discount? Send details."
+Output: {"score": 78, "stage": "Hot Lead", "reasoning": "Specific pricing request for enterprise tier.", "email_intent": "pricing_request", "email_context": "Enterprise: $416K-$624K/yr base, $332K-$499K with 20% discount. 99.99% SLA."}
+
+Conversation: "What GPUs do you have? Email me the specs."
+Output: {"score": 52, "stage": "Engaged", "reasoning": "Asking for technical specs shows interest.", "email_intent": "technical_specs", "email_context": "GPUs: G1.xlarge (A100, 16 vCPUs, 32GB RAM), G1.large (V100, 8 vCPUs)."}
+
+Conversation: "Tell me about your services"
+Output: {"score": 15, "stage": "Visitor", "reasoning": "Generic question, no specific need.", "email_intent": "general_followup", "email_context": "General interest, no specific request"}
+
+Now analyze the following conversation:
+
 Remember: Output ONLY the JSON, no additional text."""
 
 # ============================================
@@ -96,7 +151,7 @@ async def analyze_lead(session_id: str, chat_history: List[Dict[str, str]]):
         chat_history: List of message dicts with 'role' and 'text' keys
     """
     try:
-        print(f"\n🔍 Judge analyzing session: {session_id}")
+        print(f"\n[SEARCH] Judge analyzing session: {session_id}")
         
         # Step 1: Format conversation for Judge
         conversation_text = format_conversation(chat_history)
@@ -107,7 +162,7 @@ async def analyze_lead(session_id: str, chat_history: List[Dict[str, str]]):
             HumanMessage(content=f"Conversation:\n{conversation_text}\n\nAnalyze this lead:")
         ]
         
-        print(f"🤖 Calling Judge Model ({JUDGE_MODEL})...")
+        print(f"[AI] Calling Judge Model ({JUDGE_MODEL})...")
         response = judge_model.invoke(messages)
         
         # Step 3: Parse JSON response
@@ -116,25 +171,29 @@ async def analyze_lead(session_id: str, chat_history: List[Dict[str, str]]):
             score = result.get("score", 0)
             stage = result.get("stage", "Visitor")
             reasoning = result.get("reasoning", "No reasoning provided")
+            email_intent = result.get("email_intent", "general_followup")
+            email_context = result.get("email_context", "")
             
-            print(f"📊 Score: {score} | Stage: {stage}")
-            print(f"💭 Reasoning: {reasoning}")
+            print(f"[DATA] Score: {score} | Stage: {stage} | Intent: {email_intent}")
+            print(f"[THOUGHT] Reasoning: {reasoning}")
             
         except json.JSONDecodeError as e:
-            print(f"❌ Failed to parse JSON: {e}")
+            print(f"[ERROR] Failed to parse JSON: {e}")
             print(f"Raw response: {response.content}")
             # Fallback values
             score = 0
             stage = "Visitor"
             reasoning = f"Error parsing response: {response.content[:100]}"
+            email_intent = "general_followup"
+            email_context = ""
         
         # Step 4: Update/Insert lead in Supabase
-        update_lead_in_db(session_id, score, stage, reasoning)
+        update_lead_in_db(session_id, score, stage, reasoning, email_intent, email_context)
         
-        print(f"✅ Lead analysis complete for {session_id}\n")
+        print(f"[OK] Lead analysis complete for {session_id}\n")
         
     except Exception as e:
-        print(f"❌ Error in Judge Agent: {e}")
+        print(f"[ERROR] Error in Judge Agent: {e}")
         import traceback
         traceback.print_exc()
 
@@ -157,7 +216,7 @@ def format_conversation(chat_history: List[Dict[str, str]]) -> str:
     
     return "\n".join(lines)
 
-def update_lead_in_db(session_id: str, score: int, stage: str, reasoning: str):
+def update_lead_in_db(session_id: str, score: int, stage: str, reasoning: str, email_intent: str = "general_followup", email_context: str = ""):
     """
     Update or insert lead in Supabase leads table.
     
@@ -166,6 +225,8 @@ def update_lead_in_db(session_id: str, score: int, stage: str, reasoning: str):
         score: BANT score (0-100)
         stage: Pipeline stage
         reasoning: Judge's reasoning
+        email_intent: What customer asked for (for email generation)
+        email_context: Context of what they asked for
     """
     try:
         # Check if lead exists
@@ -176,22 +237,26 @@ def update_lead_in_db(session_id: str, score: int, stage: str, reasoning: str):
             supabase_client.table("leads").update({
                 "lead_score": score,
                 "pipeline_status": stage,
-                "notes": reasoning
+                "notes": reasoning,
+                "email_intent": email_intent,
+                "email_context": email_context
             }).eq("session_id", session_id).execute()
             
-            print(f"📝 Updated existing lead: {session_id}")
+            print(f"[NOTE] Updated existing lead: {session_id}")
         else:
             # Insert new lead
             supabase_client.table("leads").insert({
                 "session_id": session_id,
                 "lead_score": score,
                 "pipeline_status": stage,
-                "notes": reasoning
+                "notes": reasoning,
+                "email_intent": email_intent,
+                "email_context": email_context
             }).execute()
             
-            print(f"📝 Created new lead: {session_id}")
+            print(f"[NOTE] Created new lead: {session_id}")
             
     except Exception as e:
-        print(f"❌ Database error: {e}")
+        print(f"[ERROR] Database error: {e}")
         # Don't print full traceback - just log the error
         print(f"   Attempted to save: session={session_id}, score={score}, stage={stage}")

@@ -83,7 +83,7 @@ async def extract_lead_data(session_id: str, chat_history: List[Dict[str, str]])
         chat_history: List of message dicts with 'role' and 'text' keys
     """
     try:
-        print(f"\n📧 Extracting lead data for session: {session_id}")
+        print(f"\n[EMAIL] Extracting lead data for session: {session_id}")
         
         # Step 1: Format conversation
         conversation_text = format_conversation(chat_history)
@@ -114,19 +114,19 @@ async def extract_lead_data(session_id: str, chat_history: List[Dict[str, str]])
             clean_data = {k: v for k, v in extracted_data.items() if v is not None and v != ""}
             
             if clean_data:
-                print(f"📋 Extracted: {', '.join([f'{k}={v}' for k, v in clean_data.items()])}")
+                print(f" Extracted: {', '.join([f'{k}={v}' for k, v in clean_data.items()])}")
                 
                 # Step 4: Update database
                 update_lead_data(session_id, clean_data)
             else:
-                print("ℹ️  No new data extracted")
+                print("  No new data extracted")
                 
         except json.JSONDecodeError as e:
-            print(f"❌ Failed to parse extraction JSON: {e}")
+            print(f"[ERROR] Failed to parse extraction JSON: {e}")
             print(f"Raw response: {response.content}")
         
     except Exception as e:
-        print(f"❌ Error in lead extraction: {e}")
+        print(f"[ERROR] Error in lead extraction: {e}")
 
 def format_conversation(chat_history: List[Dict[str, str]]) -> str:
     """Format chat history for extraction."""
@@ -166,14 +166,14 @@ def update_lead_data(session_id: str, data: Dict[str, str]):
             
             if updates:
                 supabase_client.table("leads").update(updates).eq("session_id", session_id).execute()
-                print(f"✅ Updated lead contact info: {session_id}")
+                print(f"[OK] Updated lead contact info: {session_id}")
             else:
-                print(f"ℹ️  No new data to update for: {session_id}")
+                print(f"  No new data to update for: {session_id}")
         else:
             # Create new lead with extracted data
             data["session_id"] = session_id
             supabase_client.table("leads").insert(data).execute()
-            print(f"✅ Created lead with contact info: {session_id}")
+            print(f"[OK] Created lead with contact info: {session_id}")
             
     except Exception as e:
-        print(f"❌ Database error in extractor: {e}")
+        print(f"[ERROR] Database error in extractor: {e}")
