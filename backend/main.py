@@ -7,6 +7,8 @@ Slow Track: Judge Agent + Extractor (async background)
 """
 
 import os
+import json
+import re
 from typing import List
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -19,6 +21,7 @@ from supabase import create_client, Client
 from backend.judge import analyze_lead
 from backend.extractor import extract_lead_data
 from backend.email_intent_prompts import build_email_prompt
+from backend.cron import apply_time_decay
 
 load_dotenv()
 
@@ -308,40 +311,48 @@ async def draft_email(request: DraftEmailRequest):
         else:
             conversation_text = "No conversation history available."
         
-        # Get email intent and context
+        # Get email intent and context from BANT analysis
         email_intent = lead.get('email_intent', 'general_followup')
         email_context = lead.get('email_context', '')
         
         print(f"[TARGET] Email Intent: {email_intent}")
         print(f"[NOTE] Context: {email_context}")
+        print(f"[DATA] BANT Score: {lead.get('lead_score')} | Stage: {lead.get('pipeline_status')}")
         
-        
-        # Build email prompt using intent and context
+        # Build email prompt using BANT analysis + intent + conversation
         email_prompt = build_email_prompt(lead, conversation_text, email_intent, email_context)
         
-        # Initialize email drafting model (GPT-OSS-120B)
+        # Initialize email drafting model (GPT-OSS-120B) — low temperature for accuracy
         email_model = ChatGroq(
             groq_api_key=GROQ_API_KEY,
             model_name="openai/gpt-oss-120b",
-            temperature=0.7,
-            max_tokens=800
+            temperature=0.3,
+            max_tokens=1024
         )
         
         print("[AI] Calling GPT-OSS-120B for email generation...")
         response = email_model.invoke([SystemMessage(content=email_prompt)])
         
-        # Parse JSON response
-        import json
+        # Parse JSON response (robust extraction)
         raw_content = response.content.strip()
         
-        # Strip markdown code blocks if present
+        # Strategy 1: Strip markdown code blocks if present
         if raw_content.startswith("```"):
             lines = raw_content.split('\n')
             json_content = '\n'.join(lines[1:-1])
         else:
             json_content = raw_content
         
-        email_data = json.loads(json_content)
+        # Strategy 2: If still invalid, try to find JSON object in the text
+        try:
+            email_data = json.loads(json_content)
+        except json.JSONDecodeError:
+            # Find the first { ... } block
+            match = re.search(r'\{[\s\S]*\}', raw_content)
+            if match:
+                email_data = json.loads(match.group(0))
+            else:
+                raise json.JSONDecodeError("No JSON object found", raw_content, 0)
         
         print(f"[OK] Email generated: {email_data['subject']}")
         
@@ -379,6 +390,29 @@ async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest):
         
     except Exception as e:
         print(f"[ERROR] Error updating lead status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# Admin Endpoints
+# ============================================
+
+@app.post("/admin/force_decay")
+async def force_decay():
+    """
+    Manually trigger time-decay on all eligible leads.
+    Useful for live demos to show score decay in real-time.
+    """
+    try:
+        print("\n[DECAY] Manual time-decay triggered by admin")
+        summary = apply_time_decay()
+        return {
+            "success": True,
+            "message": f"Decay applied: {summary['updated']} leads updated, {summary['skipped']} skipped",
+            "summary": summary
+        }
+    except Exception as e:
+        print(f"[ERROR] Force decay failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

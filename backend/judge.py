@@ -30,7 +30,7 @@ judge_model = ChatGroq(
     groq_api_key=GROQ_API_KEY,
     model_name=JUDGE_MODEL,
     temperature=0,
-    max_tokens=1024  # Increased for detailed email_context
+    max_tokens=1500  # Enough room for detailed email_context extraction
 )
 
 # Initialize Supabase Client
@@ -90,23 +90,32 @@ Analyze what the customer is ASKING FOR to determine what kind of follow-up emai
 - "custom_solution" - Need custom architecture or proposal
 - "general_followup" - No specific request, just general interest
 
-**EMAIL CONTEXT:** Extract SPECIFIC details the customer asked about:
+**EMAIL CONTEXT:** Extract EVERY specific detail the customer discussed or the assistant quoted.
+This context will be used to generate the follow-up email — accuracy is critical.
 
-For pricing_request:
-- Instance types: "G1.xlarge with A100 GPU"
-- Pricing: "$6,325/month" or "$70,900/year"
+For pricing_request — extract ALL numbers mentioned:
+- Instance types and per-unit costs: "G1.xlarge: $6,325/month"
+- Annual totals: "$70,900/year"
 - Credits/offers: "$5,000 startup credits"
-- Support: "Professional Support"
 - Discounts: "20% annual discount"
+- Tier info: "Enterprise tier, 99.99% SLA"
+- Quantity: "10 instances", "50 users"
 
-For technical_specs:
-- Instance: "G1.xlarge"
-- GPU: "NVIDIA A100, 40GB VRAM"
-- Compute: "16 vCPUs, 32GB RAM"
-- Storage: "400GB SSD"
+For technical_specs — extract ALL specs:
+- Instance name, GPU model, vCPUs, RAM, storage, network
+- Performance numbers discussed
 
-Format as concise bullet points (max 2-3 lines):
-"G1.xlarge: $8,700/mo. Startup credits: $5K. Monitoring: $100/mo."
+For plan_comparison — extract EACH option:
+- Plan A vs Plan B with key differences
+
+For startup_program — extract program details:
+- Credit amount, duration, eligibility, how to apply
+
+For custom_solution — extract solution components:
+- Use case, recommended config, pricing estimate
+
+Format as detailed bullet points. Include EVERY relevant number or detail.
+Example: "G1.xlarge: $6,325/mo ($70,900/yr). 10 instances = $63,250/mo. Startup credits: $5K. 20% annual discount available. 16 vCPUs, 32GB RAM, A100 GPU per instance."
 
 **Updated Output Format:**
 {
@@ -130,6 +139,20 @@ Output: {"score": 52, "stage": "Engaged", "reasoning": "Asking for technical spe
 
 Conversation: "Tell me about your services"
 Output: {"score": 15, "stage": "Visitor", "reasoning": "Generic question, no specific need.", "email_intent": "general_followup", "email_context": "General interest, no specific request"}
+
+**TROLL / OFF-TOPIC DETECTION:**
+If the user is clearly playing around, asking non-business questions (riddles, jokes, memes, insults,
+personal questions, or anything completely unrelated to cloud infrastructure / business), you MUST:
+- Set score to 0
+- Set stage to "Visitor"
+- Set reasoning to "TROLL DETECTED - <brief explanation>"
+- Set email_intent to "general_followup"
+- Set email_context to "Non-business interaction, no follow-up needed"
+
+Examples of troll behaviour:
+- "Tell me a joke", "What is 2+2?", "Who is the president?"
+- "You're stupid", "lol", "asdf", random gibberish
+- Any conversation with ZERO relevance to cloud, infrastructure, pricing, or business
 
 Now analyze the following conversation:
 

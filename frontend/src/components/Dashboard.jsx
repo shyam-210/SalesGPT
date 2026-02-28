@@ -1,17 +1,21 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
-import { ArrowLeft, RefreshCw, TrendingUp, Users, Target, Flame, X, Mail, Copy, Check } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { ArrowLeft, RefreshCw, TrendingUp, Users, Target, Flame, X, Mail, Copy, Check, Send, Zap, Clock } from 'lucide-react'
+import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
+
+const API = 'http://localhost:8000'
 
 const Dashboard = () => {
     const [leads, setLeads] = useState([])
     const [loading, setLoading] = useState(true)
+    const [decaying, setDecaying] = useState(false)
     const navigate = useNavigate()
 
     useEffect(() => {
         fetchLeads()
-        subscribeToLeads()
+        const unsub = subscribeToLeads()
+        return unsub
     }, [])
 
     const fetchLeads = async () => {
@@ -52,180 +56,198 @@ const Dashboard = () => {
             case 'INSERT':
                 setLeads(prev => [newRecord, ...prev])
                 break
-
             case 'UPDATE':
                 setLeads(prev => prev.map(lead =>
                     lead.id === newRecord.id ? newRecord : lead
                 ))
                 break
-
             case 'DELETE':
                 setLeads(prev => prev.filter(lead => lead.id !== oldRecord.id))
                 break
         }
     }
 
-    const getLeadsByStage = (stage) => {
-        return leads.filter(lead => lead.pipeline_status === stage)
+    const triggerDecay = async () => {
+        try {
+            setDecaying(true)
+            const res = await fetch(`${API}/admin/force_decay`, { method: 'POST' })
+            const data = await res.json()
+            console.log('Decay result:', data)
+            // Supabase realtime will update the board; also force-refresh
+            await fetchLeads()
+        } catch (err) {
+            console.error('Decay failed:', err)
+        } finally {
+            setDecaying(false)
+        }
     }
 
+    const getLeadsByStage = (stage) => leads.filter(l => l.pipeline_status === stage)
+
     const columns = [
-        {
-            title: 'Visitor',
-            stage: 'Visitor',
-            icon: Users,
-            color: 'slate',
-            range: '0-30'
-        },
-        {
-            title: 'Engaged',
-            stage: 'Engaged',
-            icon: TrendingUp,
-            color: 'blue',
-            range: '31-50'
-        },
-        {
-            title: 'Qualified',
-            stage: 'Qualified',
-            icon: Target,
-            color: 'amber',
-            range: '51-70'
-        },
-        {
-            title: 'Hot Lead',
-            stage: 'Hot Lead',
-            icon: Flame,
-            color: 'emerald',
-            range: '71-100'
-        },
-        {
-            title: 'Approached',
-            stage: 'Approached',
-            icon: Mail,
-            color: 'purple',
-            range: 'Contacted'
-        }
+        { title: 'Visitor', stage: 'Visitor', icon: Users, color: 'slate', gradient: 'from-slate-600 to-slate-700', range: '0-30' },
+        { title: 'Engaged', stage: 'Engaged', icon: TrendingUp, color: 'blue', gradient: 'from-blue-600 to-blue-700', range: '31-50' },
+        { title: 'Qualified', stage: 'Qualified', icon: Target, color: 'amber', gradient: 'from-amber-600 to-amber-700', range: '51-70' },
+        { title: 'Hot Lead', stage: 'Hot Lead', icon: Flame, color: 'emerald', gradient: 'from-emerald-500 to-emerald-600', range: '71-100' },
+        { title: 'Approached', stage: 'Approached', icon: Mail, color: 'purple', gradient: 'from-purple-600 to-purple-700', range: 'Contacted' },
     ]
 
     if (loading) {
         return (
-            <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-                <RefreshCw className="animate-spin text-blue-500" size={48} />
+            <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+                <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}>
+                    <RefreshCw className="text-indigo-500" size={48} />
+                </motion.div>
             </div>
         )
     }
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
+        <div className="min-h-screen bg-slate-950 text-slate-200 p-6 relative overflow-hidden">
+            {/* Animated gradient mesh background */}
+            <div className="pointer-events-none fixed inset-0 -z-10">
+                <div className="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] bg-[radial-gradient(ellipse_at_20%_50%,rgba(99,102,241,0.08)_0%,transparent_50%),radial-gradient(ellipse_at_80%_20%,rgba(139,92,246,0.06)_0%,transparent_50%),radial-gradient(ellipse_at_50%_80%,rgba(59,130,246,0.05)_0%,transparent_50%)] animate-gradient-shift" />
+            </div>
+
             {/* Header */}
-            <div className="max-w-7xl mx-auto mb-8">
+            <div className="max-w-[1440px] mx-auto mb-8">
                 <div className="flex items-center justify-between">
                     <div>
-                        <h1 className="text-4xl font-bold text-white mb-2">Admin Dashboard</h1>
-                        <p className="text-slate-400">Real-time lead tracking & BANT scoring</p>
+                        <h1 className="text-4xl font-bold bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent mb-1">
+                            Admin Dashboard
+                        </h1>
+                        <p className="text-slate-500 text-sm tracking-wide">Real-time lead tracking &middot; BANT scoring &middot; AI email</p>
                     </div>
                     <div className="flex gap-3">
                         <button
-                            onClick={fetchLeads}
-                            className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg transition-colors"
+                            onClick={triggerDecay}
+                            disabled={decaying}
+                            className="flex items-center gap-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-700/50 px-4 py-2 rounded-xl transition-all text-sm font-medium disabled:opacity-50"
                         >
-                            <RefreshCw size={20} />
+                            {decaying ? <RefreshCw size={16} className="animate-spin" /> : <Clock size={16} />}
+                            Force Decay
+                        </button>
+                        <button
+                            onClick={fetchLeads}
+                            className="flex items-center gap-2 bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/50 px-4 py-2 rounded-xl transition-all text-sm"
+                        >
+                            <RefreshCw size={16} />
                             Refresh
                         </button>
                         <button
                             onClick={() => navigate('/')}
-                            className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors"
+                            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl transition-all text-sm font-medium shadow-lg shadow-indigo-600/20"
                         >
-                            <ArrowLeft size={20} />
+                            <ArrowLeft size={16} />
                             Home
                         </button>
                     </div>
                 </div>
 
-                {/* Stats */}
+                {/* Stats Row */}
                 <div className="grid grid-cols-5 gap-4 mt-6">
                     {columns.map(col => {
                         const count = getLeadsByStage(col.stage).length
                         return (
-                            <div key={col.stage} className="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                            <motion.div
+                                key={col.stage}
+                                whileHover={{ y: -2 }}
+                                className="bg-slate-900/60 backdrop-blur-sm rounded-xl p-4 border border-slate-800/80 shadow-lg"
+                            >
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <p className="text-slate-400 text-sm">{col.title}</p>
-                                        <p className="text-2xl font-bold text-white">{count}</p>
+                                        <p className="text-slate-500 text-xs font-medium uppercase tracking-wider">{col.title}</p>
+                                        <p className="text-3xl font-bold text-white mt-1">{count}</p>
                                     </div>
-                                    <col.icon className={`text-${col.color}-500`} size={32} />
+                                    <div className={`p-2 rounded-lg bg-gradient-to-br ${col.gradient} bg-opacity-20`}>
+                                        <col.icon className="text-white/90" size={22} />
+                                    </div>
                                 </div>
-                            </div>
+                            </motion.div>
                         )
                     })}
                 </div>
             </div>
 
             {/* Kanban Board */}
-            <div className="max-w-7xl mx-auto">
-                <div className="grid grid-cols-5 gap-4">
-                    {columns.map(column => (
-                        <KanbanColumn
-                            key={column.stage}
-                            title={column.title}
-                            stage={column.stage}
-                            leads={getLeadsByStage(column.stage)}
-                            color={column.color}
-                            range={column.range}
-                            onLeadUpdate={fetchLeads}
-                        />
-                    ))}
+            <div className="max-w-[1440px] mx-auto">
+                <LayoutGroup>
+                    <div className="grid grid-cols-5 gap-4">
+                        {columns.map(column => (
+                            <KanbanColumn
+                                key={column.stage}
+                                title={column.title}
+                                stage={column.stage}
+                                leads={getLeadsByStage(column.stage)}
+                                color={column.color}
+                                gradient={column.gradient}
+                                range={column.range}
+                                onLeadUpdate={fetchLeads}
+                            />
+                        ))}
+                    </div>
+                </LayoutGroup>
+            </div>
+        </div>
+    )
+}
+
+/* ========== Kanban Column ========== */
+
+const KanbanColumn = ({ title, stage, leads, color, gradient, range, onLeadUpdate }) => {
+    return (
+        <div className="flex flex-col h-[640px]">
+            <div className={`bg-gradient-to-r ${gradient} rounded-t-xl p-3 shadow-md`}>
+                <div className="flex items-center justify-between">
+                    <h3 className="text-white font-semibold text-sm tracking-wide">{title}</h3>
+                    <span className="text-white/60 text-xs font-mono bg-white/10 px-2 py-0.5 rounded-full">{range}</span>
                 </div>
             </div>
-        </div>
-    )
-}
 
-const KanbanColumn = ({ title, stage, leads, color, range, onLeadUpdate }) => {
-    const colorMap = {
-        slate: 'bg-slate-700 border-slate-600',
-        blue: 'bg-blue-900/30 border-blue-700',
-        amber: 'bg-amber-900/30 border-amber-700',
-        emerald: 'bg-emerald-900/30 border-emerald-700',
-        purple: 'bg-purple-900/30 border-purple-700'
-    }
-
-    return (
-        <div className="flex flex-col h-[600px]">
-            <div className={`${colorMap[color]} border-2 rounded-t-lg p-3`}>
-                <h3 className="text-white font-semibold text-lg">{title}</h3>
-                <p className="text-slate-400 text-sm">Score: {range}</p>
-            </div>
-
-            <div className="flex-1 bg-slate-800/50 border-2 border-t-0 border-slate-700 rounded-b-lg p-3 overflow-y-auto space-y-3">
-                {leads.length === 0 ? (
-                    <p className="text-slate-500 text-center mt-8 text-sm">No leads yet</p>
-                ) : (
-                    leads.map(lead => (
-                        <LeadCard key={lead.id} lead={lead} color={color} stage={stage} onLeadUpdate={onLeadUpdate} />
-                    ))
-                )}
+            <div className="flex-1 bg-slate-900/40 backdrop-blur-sm border border-slate-800/60 border-t-0 rounded-b-xl p-3 overflow-y-auto space-y-3 scrollbar-thin">
+                <AnimatePresence mode="popLayout">
+                    {leads.length === 0 ? (
+                        <motion.p
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            className="text-slate-600 text-center mt-12 text-xs"
+                        >
+                            No leads
+                        </motion.p>
+                    ) : (
+                        leads.map(lead => (
+                            <LeadCard key={lead.id} lead={lead} color={color} stage={stage} onLeadUpdate={onLeadUpdate} />
+                        ))
+                    )}
+                </AnimatePresence>
             </div>
         </div>
     )
 }
+
+/* ========== Lead Card ========== */
 
 const LeadCard = ({ lead, color, stage, onLeadUpdate }) => {
     const [showModal, setShowModal] = useState(false)
     const [showEmailModal, setShowEmailModal] = useState(false)
 
-    const truncateId = (id) => {
-        return id.length > 20 ? `...${id.slice(-12)}` : id
+    const truncId = (id) => id.length > 20 ? `...${id.slice(-10)}` : id
+
+    // Dynamic score color: Red < 30, Yellow 30-69, Green 70+
+    const getScoreColor = (score) => {
+        if (score >= 70) return 'text-emerald-400'
+        if (score >= 30) return 'text-amber-400'
+        return 'text-red-400'
     }
 
-    const getScoreColor = (score) => {
-        if (score >= 71) return 'text-emerald-400'
-        if (score >= 51) return 'text-amber-400'
-        if (score >= 31) return 'text-blue-400'
-        return 'text-slate-400'
+    const getBarColor = (score) => {
+        if (score >= 70) return 'bg-emerald-500'
+        if (score >= 30) return 'bg-amber-500'
+        return 'bg-red-500'
     }
 
     const timeAgo = (date) => {
+        if (!date) return ''
         const seconds = Math.floor((new Date() - new Date(date)) / 1000)
         if (seconds < 60) return `${seconds}s ago`
         if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
@@ -233,187 +255,158 @@ const LeadCard = ({ lead, color, stage, onLeadUpdate }) => {
         return `${Math.floor(seconds / 86400)}d ago`
     }
 
-    // Show Draft Email button for Qualified and Hot Lead only
     const showDraftEmailButton = stage === 'Qualified' || stage === 'Hot Lead'
 
     return (
         <>
             <motion.div
+                layout
+                layoutId={`lead-${lead.id}`}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="bg-slate-800 rounded-lg p-4 border border-slate-700 hover:border-slate-600 hover:shadow-lg transition-all"
+                exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+                whileHover={{ y: -3, transition: { duration: 0.15 } }}
+                className="bg-slate-800/80 backdrop-blur-sm rounded-xl p-4 border border-slate-700/60 hover:border-slate-600 hover:shadow-xl hover:shadow-indigo-500/10 transition-all cursor-pointer group"
             >
                 {/* Name & Company */}
                 <div className="mb-2">
-                    <p className="text-white font-semibold text-sm">
-                        {lead.name || 'N/A'}
+                    <p className="text-white font-semibold text-sm group-hover:text-indigo-300 transition-colors">
+                        {lead.name || 'Anonymous'}
                     </p>
-                    <p className="text-slate-400 text-xs">
-                        {lead.company || 'N/A'}
+                    <p className="text-slate-500 text-xs">
+                        {lead.company || 'Unknown company'}
                     </p>
                 </div>
 
                 <div className="flex items-center justify-between mb-2">
-                    <span className="text-slate-400 text-xs font-mono">
-                        {truncateId(lead.session_id)}
+                    <span className="text-slate-600 text-[10px] font-mono">
+                        {truncId(lead.session_id)}
                     </span>
-                    <span className={`text-xl font-bold ${getScoreColor(lead.lead_score)}`}>
+                    <span className={`text-xl font-bold tabular-nums ${getScoreColor(lead.lead_score)}`}>
                         {lead.lead_score}
                     </span>
                 </div>
 
-                {/* Progress Bar */}
-                <div className="w-full bg-slate-700 rounded-full h-2 mb-3">
-                    <div
-                        className={`h-2 rounded-full bg-${color}-500`}
-                        style={{ width: `${lead.lead_score}%` }}
+                {/* Score Bar */}
+                <div className="w-full bg-slate-700/50 rounded-full h-1.5 mb-3 overflow-hidden">
+                    <motion.div
+                        className={`h-1.5 rounded-full ${getBarColor(lead.lead_score)}`}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${lead.lead_score}%` }}
+                        transition={{ duration: 0.6, ease: 'easeOut' }}
                     />
                 </div>
 
                 {/* Draft Email Button */}
                 {showDraftEmailButton && (
                     <button
-                        onClick={() => setShowEmailModal(true)}
-                        className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors text-sm font-medium mb-2"
+                        onClick={(e) => { e.stopPropagation(); setShowEmailModal(true) }}
+                        className="w-full flex items-center justify-center gap-2 bg-indigo-600/80 hover:bg-indigo-500 text-white px-3 py-2 rounded-lg transition-all text-xs font-medium mb-2 shadow-md shadow-indigo-600/10"
                     >
-                        <Mail size={16} />
+                        <Mail size={14} />
                         Draft Email
                     </button>
                 )}
 
-                {/* View Details Button */}
+                {/* View Details */}
                 <button
-                    onClick={() => setShowModal(true)}
-                    className="w-full bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg transition-colors text-sm"
+                    onClick={(e) => { e.stopPropagation(); setShowModal(true) }}
+                    className="w-full bg-slate-700/60 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg transition-colors text-xs"
                 >
                     View Details
                 </button>
 
                 {/* Timestamp */}
-                <p className="text-slate-500 text-xs mt-2">
-                    Updated {timeAgo(lead.updated_at || lead.created_at)}
+                <p className="text-slate-600 text-[10px] mt-2">
+                    {timeAgo(lead.updated_at || lead.created_at)}
                 </p>
             </motion.div>
 
-            {/* Lead Detail Modal */}
-            {showModal && (
-                <LeadDetailModal lead={lead} color={color} onClose={() => setShowModal(false)} />
-            )}
-
-            {/* Email Draft Modal */}
-            {showEmailModal && (
-                <EmailDraftModal
-                    lead={lead}
-                    onClose={() => setShowEmailModal(false)}
-                    onLeadUpdate={onLeadUpdate}
-                />
-            )}
+            {showModal && <LeadDetailModal lead={lead} color={color} onClose={() => setShowModal(false)} />}
+            {showEmailModal && <EmailDraftModal lead={lead} onClose={() => setShowEmailModal(false)} onLeadUpdate={onLeadUpdate} />}
         </>
     )
 }
 
+/* ========== Lead Detail Modal ========== */
+
 const LeadDetailModal = ({ lead, color, onClose }) => {
     const getScoreColor = (score) => {
-        if (score >= 71) return 'text-emerald-400'
-        if (score >= 51) return 'text-amber-400'
-        if (score >= 31) return 'text-blue-400'
-        return 'text-slate-400'
+        if (score >= 70) return 'text-emerald-400'
+        if (score >= 30) return 'text-amber-400'
+        return 'text-red-400'
     }
 
     return (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
             <motion.div
-                initial={{ opacity: 0, scale: 0.9 }}
+                initial={{ opacity: 0, scale: 0.92 }}
                 animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.92 }}
+                transition={{ type: 'spring', damping: 25, stiffness: 350 }}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-slate-800 rounded-xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto border border-slate-700"
+                className="bg-slate-900/95 backdrop-blur-xl rounded-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto border border-slate-800 shadow-2xl"
             >
                 <div className="flex items-center justify-between mb-6">
                     <h2 className="text-2xl font-bold text-white">Lead Details</h2>
-                    <button
-                        onClick={onClose}
-                        className="text-slate-400 hover:text-white"
-                    >
-                        <X size={24} />
+                    <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors">
+                        <X size={22} />
                     </button>
                 </div>
 
-                {/* Lead Info Grid */}
                 <div className="grid grid-cols-2 gap-4 mb-6">
+                    {[
+                        ['Name', lead.name],
+                        ['Company', lead.company],
+                        ['Email', lead.email],
+                        ['Phone', lead.phone],
+                        ['Role', lead.role],
+                    ].map(([label, value]) => (
+                        <div key={label}>
+                            <p className="text-slate-500 text-xs uppercase tracking-wider">{label}</p>
+                            <p className="text-white font-medium text-sm mt-0.5">{value || 'N/A'}</p>
+                        </div>
+                    ))}
                     <div>
-                        <p className="text-slate-400 text-sm">Name</p>
-                        <p className="text-white font-semibold">{lead.name || 'N/A'}</p>
-                    </div>
-                    <div>
-                        <p className="text-slate-400 text-sm">Company</p>
-                        <p className="text-white font-semibold">{lead.company || 'N/A'}</p>
-                    </div>
-                    <div>
-                        <p className="text-slate-400 text-sm">Email</p>
-                        <p className="text-white font-semibold">{lead.email || 'N/A'}</p>
-                    </div>
-                    <div>
-                        <p className="text-slate-400 text-sm">Phone</p>
-                        <p className="text-white font-semibold">{lead.phone || 'N/A'}</p>
-                    </div>
-                    <div>
-                        <p className="text-slate-400 text-sm">Role</p>
-                        <p className="text-white font-semibold">{lead.role || 'N/A'}</p>
-                    </div>
-                    <div>
-                        <p className="text-slate-400 text-sm">Score</p>
-                        <p className={`text-2xl font-bold ${getScoreColor(lead.lead_score)}`}>
-                            {lead.lead_score}
-                        </p>
+                        <p className="text-slate-500 text-xs uppercase tracking-wider">Score</p>
+                        <p className={`text-2xl font-bold mt-0.5 ${getScoreColor(lead.lead_score)}`}>{lead.lead_score}</p>
                     </div>
                 </div>
 
                 {/* Pipeline Status */}
                 <div className="mb-6">
-                    <p className="text-slate-400 text-sm mb-2">Pipeline Status</p>
-                    <span className={`inline-block px-3 py-1 rounded-full text-sm font-semibold bg-${color}-900/30 text-${color}-400 border border-${color}-700`}>
+                    <p className="text-slate-500 text-xs uppercase tracking-wider mb-2">Pipeline Status</p>
+                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold bg-${color}-900/40 text-${color}-400 border border-${color}-700/50`}>
                         {lead.pipeline_status}
                     </span>
                 </div>
 
-                {/* Needs */}
                 {lead.needs && (
                     <div className="mb-6">
-                        <p className="text-slate-400 text-sm mb-2">Needs & Pain Points</p>
-                        <p className="text-white bg-slate-900 p-3 rounded-lg text-sm">
-                            {lead.needs}
-                        </p>
+                        <p className="text-slate-500 text-xs uppercase tracking-wider mb-2">Needs</p>
+                        <p className="text-slate-300 bg-slate-800/60 p-3 rounded-lg text-sm border border-slate-700/40">{lead.needs}</p>
                     </div>
                 )}
 
-                {/* Notes */}
                 {lead.notes && (
                     <div className="mb-6">
-                        <p className="text-slate-400 text-sm mb-2">BANT Analysis</p>
-                        <p className="text-white bg-slate-900 p-3 rounded-lg text-sm">
-                            {lead.notes}
-                        </p>
+                        <p className="text-slate-500 text-xs uppercase tracking-wider mb-2">BANT Analysis</p>
+                        <p className="text-slate-300 bg-slate-800/60 p-3 rounded-lg text-sm border border-slate-700/40">{lead.notes}</p>
                     </div>
                 )}
 
-                {/* Session Info */}
-                <div className="border-t border-slate-700 pt-4">
-                    <p className="text-slate-400 text-xs mb-1">Session ID</p>
-                    <p className="text-slate-500 text-xs font-mono">{lead.session_id}</p>
-                    <p className="text-slate-400 text-xs mt-2">
-                        Created: {new Date(lead.created_at).toLocaleString()}
-                    </p>
-                    <p className="text-slate-400 text-xs">
-                        Updated: {new Date(lead.updated_at || lead.created_at).toLocaleString()}
+                <div className="border-t border-slate-800 pt-4">
+                    <p className="text-slate-600 text-[10px] font-mono">{lead.session_id}</p>
+                    <p className="text-slate-600 text-[10px] mt-1">
+                        Created {new Date(lead.created_at).toLocaleString()} &middot; Updated {new Date(lead.updated_at || lead.created_at).toLocaleString()}
                     </p>
                 </div>
 
-                {/* Action Buttons */}
                 {lead.email && lead.email !== 'N/A' && (
                     <div className="mt-6">
                         <a
                             href={`mailto:${lead.email}`}
-                            className="w-full bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors inline-block text-center"
+                            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl transition-all inline-block text-center font-medium shadow-lg shadow-indigo-600/20"
                         >
                             Contact Lead
                         </a>
@@ -424,38 +417,29 @@ const LeadDetailModal = ({ lead, color, onClose }) => {
     )
 }
 
+/* ========== Email Draft Modal (with mailto handoff) ========== */
+
 const EmailDraftModal = ({ lead, onClose, onLeadUpdate }) => {
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState(null)
     const [subject, setSubject] = useState('')
     const [body, setBody] = useState('')
     const [copied, setCopied] = useState(false)
-    const [marking, setMarking] = useState(false)
+    const [sending, setSending] = useState(false)
 
-    useEffect(() => {
-        generateEmail()
-    }, [])
+    useEffect(() => { generateEmail() }, [])
 
     const generateEmail = async () => {
         try {
             setLoading(true)
             setError(null)
-
-            const response = await fetch('http://localhost:8000/draft_email', {
+            const res = await fetch(`${API}/draft_email`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    session_id: lead.session_id
-                })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: lead.session_id })
             })
-
-            if (!response.ok) {
-                throw new Error('Failed to generate email')
-            }
-
-            const data = await response.json()
+            if (!res.ok) throw new Error('Failed to generate email')
+            const data = await res.json()
             setSubject(data.subject)
             setBody(data.body)
         } catch (err) {
@@ -467,73 +451,98 @@ const EmailDraftModal = ({ lead, onClose, onLeadUpdate }) => {
     }
 
     const copyToClipboard = () => {
-        const emailText = `Subject: ${subject}\n\n${body}`
-        navigator.clipboard.writeText(emailText)
+        navigator.clipboard.writeText(`Subject: ${subject}\n\n${body}`)
         setCopied(true)
         setTimeout(() => setCopied(false), 2000)
     }
 
-    const markAsApproached = async () => {
+    const reviewAndSend = async () => {
         try {
-            setMarking(true)
+            setSending(true)
 
-            const response = await fetch(`http://localhost:8000/leads/${lead.session_id}`, {
+            // 1. Open mailto link in user's default email client
+            const mailtoUrl = `mailto:${lead.email || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+            window.location.href = mailtoUrl
+
+            // 2. Mark as Approached in backend
+            const res = await fetch(`${API}/leads/${lead.session_id}`, {
                 method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    pipeline_status: 'Approached'
-                })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pipeline_status: 'Approached' })
             })
+            if (!res.ok) throw new Error('Failed to update status')
 
-            if (!response.ok) {
-                throw new Error('Failed to update lead status')
-            }
-
-            // Refresh leads
             onLeadUpdate()
             onClose()
         } catch (err) {
-            console.error('Error updating lead:', err)
-            alert('Failed to update lead status')
+            console.error('Error in send flow:', err)
+            alert('Email client opened, but status update failed.')
         } finally {
-            setMarking(false)
+            setSending(false)
         }
     }
 
     return (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
             <motion.div
-                initial={{ opacity: 0, scale: 0.9 }}
+                initial={{ opacity: 0, scale: 0.92 }}
                 animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.92 }}
+                transition={{ type: 'spring', damping: 25, stiffness: 350 }}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-slate-800 rounded-xl p-6 max-w-3xl w-full max-h-[80vh] overflow-y-auto border border-slate-700"
+                className="bg-slate-900/95 backdrop-blur-xl rounded-2xl p-6 max-w-3xl w-full max-h-[80vh] overflow-y-auto border border-slate-800 shadow-2xl"
             >
+                {/* Header */}
                 <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-2xl font-bold text-white">AI-Generated Email Draft</h2>
-                    <button
-                        onClick={onClose}
-                        className="text-slate-400 hover:text-white"
-                    >
-                        <X size={24} />
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 bg-indigo-600/20 rounded-lg">
+                            <Zap size={20} className="text-indigo-400" />
+                        </div>
+                        <div>
+                            <h2 className="text-xl font-bold text-white">AI Email Draft</h2>
+                            <p className="text-slate-500 text-xs">Powered by BANT analysis</p>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors">
+                        <X size={22} />
                     </button>
                 </div>
 
+                {/* Lead context chip */}
+                <div className="flex items-center gap-2 mb-5 text-xs">
+                    <span className="bg-slate-800 text-slate-400 px-3 py-1 rounded-full border border-slate-700/50">
+                        {lead.name || 'Anonymous'}
+                    </span>
+                    {lead.email && (
+                        <span className="bg-slate-800 text-slate-400 px-3 py-1 rounded-full border border-slate-700/50">
+                            {lead.email}
+                        </span>
+                    )}
+                    <span className="bg-indigo-900/40 text-indigo-400 px-3 py-1 rounded-full border border-indigo-700/40">
+                        Score: {lead.lead_score}
+                    </span>
+                </div>
+
                 {loading && (
-                    <div className="flex flex-col items-center justify-center py-12">
-                        <RefreshCw className="animate-spin text-blue-500 mb-4" size={48} />
-                        <p className="text-slate-400">AI is writing your email...</p>
+                    <div className="flex flex-col items-center justify-center py-16">
+                        <div className="flex gap-1.5 mb-4">
+                            {[0, 1, 2].map(i => (
+                                <motion.div
+                                    key={i}
+                                    className="w-2.5 h-2.5 bg-indigo-500 rounded-full"
+                                    animate={{ y: [0, -8, 0] }}
+                                    transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.15 }}
+                                />
+                            ))}
+                        </div>
+                        <p className="text-slate-500 text-sm">AI is crafting your email...</p>
                     </div>
                 )}
 
                 {error && (
-                    <div className="bg-red-900/30 border border-red-700 rounded-lg p-4 mb-4">
-                        <p className="text-red-400">{error}</p>
-                        <button
-                            onClick={generateEmail}
-                            className="mt-2 text-red-400 hover:text-red-300 underline"
-                        >
+                    <div className="bg-red-900/20 border border-red-800/50 rounded-xl p-4 mb-4">
+                        <p className="text-red-400 text-sm">{error}</p>
+                        <button onClick={generateEmail} className="mt-2 text-red-400 hover:text-red-300 underline text-sm">
                             Try again
                         </button>
                     </div>
@@ -541,62 +550,44 @@ const EmailDraftModal = ({ lead, onClose, onLeadUpdate }) => {
 
                 {!loading && !error && (
                     <>
-                        {/* Subject */}
                         <div className="mb-4">
-                            <label className="text-slate-400 text-sm mb-2 block">Subject</label>
+                            <label className="text-slate-500 text-xs uppercase tracking-wider mb-1.5 block">Subject</label>
                             <input
                                 type="text"
                                 value={subject}
                                 onChange={(e) => setSubject(e.target.value)}
-                                className="w-full bg-slate-900 text-white px-4 py-2 rounded-lg border border-slate-700 focus:border-blue-500 focus:outline-none"
+                                className="w-full bg-slate-800/80 text-white px-4 py-2.5 rounded-xl border border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none text-sm transition-all"
                             />
                         </div>
 
-                        {/* Body */}
                         <div className="mb-6">
-                            <label className="text-slate-400 text-sm mb-2 block">Body</label>
+                            <label className="text-slate-500 text-xs uppercase tracking-wider mb-1.5 block">Body</label>
                             <textarea
                                 value={body}
                                 onChange={(e) => setBody(e.target.value)}
                                 rows={12}
-                                className="w-full bg-slate-900 text-white px-4 py-3 rounded-lg border border-slate-700 focus:border-blue-500 focus:outline-none font-mono text-sm"
+                                className="w-full bg-slate-800/80 text-white px-4 py-3 rounded-xl border border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none text-sm leading-relaxed transition-all"
                             />
                         </div>
 
-                        {/* Action Buttons */}
+                        {/* Actions */}
                         <div className="flex gap-3">
                             <button
                                 onClick={copyToClipboard}
-                                className="flex-1 flex items-center justify-center gap-2 bg-slate-700 hover:bg-slate-600 text-white px-4 py-3 rounded-lg transition-colors font-medium"
+                                className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 px-5 py-3 rounded-xl transition-all text-sm font-medium border border-slate-700/50"
                             >
-                                {copied ? (
-                                    <>
-                                        <Check size={20} />
-                                        Copied!
-                                    </>
-                                ) : (
-                                    <>
-                                        <Copy size={20} />
-                                        Copy to Clipboard
-                                    </>
-                                )}
+                                {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
                             </button>
 
                             <button
-                                onClick={markAsApproached}
-                                disabled={marking}
-                                className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 rounded-lg transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                onClick={reviewAndSend}
+                                disabled={sending}
+                                className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-3 rounded-xl transition-all text-sm font-semibold shadow-lg shadow-indigo-600/20 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {marking ? (
-                                    <>
-                                        <RefreshCw className="animate-spin" size={20} />
-                                        Updating...
-                                    </>
+                                {sending ? (
+                                    <><RefreshCw size={16} className="animate-spin" /> Sending...</>
                                 ) : (
-                                    <>
-                                        <Check size={20} />
-                                        Mark as Approached
-                                    </>
+                                    <><Send size={16} /> Review &amp; Send Email</>
                                 )}
                             </button>
                         </div>
