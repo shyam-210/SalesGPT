@@ -72,8 +72,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="SalesGPT API",
-    description="Dual-track lead qualification system",
-    version="2.0.0",
+    description="Dual-track lead qualification system with analytics",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -148,6 +148,16 @@ class UpdateLeadStatusRequest(BaseModel):
         pattern=r"^(Visitor|Engaged|Qualified|Hot Lead|Approached)$",
         description="Must be one of the valid pipeline stages",
     )
+
+class LeadSearchRequest(BaseModel):
+    query: str = Field(default="", max_length=256)
+    pipeline_status: str | None = None
+    min_score: int = Field(default=0, ge=0, le=100)
+    max_score: int = Field(default=100, ge=0, le=100)
+    sort_by: str = Field(default="lead_score", pattern=r"^(lead_score|created_at|updated_at|last_active)$")
+    sort_order: str = Field(default="desc", pattern=r"^(asc|desc)$")
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
 
 
 # ============================================
@@ -303,8 +313,18 @@ Your response (be helpful and expert):"""
 async def root():
     return {
         "name": "SalesGPT API",
-        "version": "1.0.0",
-        "status": "running"
+        "version": "3.0.0",
+        "status": "running",
+        "endpoints": {
+            "chat": "/chat",
+            "leads": "/leads",
+            "lead_search": "/leads/search",
+            "analytics": "/analytics/dashboard",
+            "activity_feed": "/analytics/activity",
+            "conversations": "/conversations/{session_id}",
+            "draft_email": "/draft_email",
+            "docs": "/docs",
+        },
     }
 
 @app.get("/health")
@@ -321,6 +341,198 @@ async def get_leads():
             "leads": result.data
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# Analytics & Intelligence Endpoints
+# ============================================
+
+@app.get("/analytics/dashboard")
+async def analytics_dashboard():
+    """
+    Comprehensive analytics: pipeline funnel, score distribution,
+    conversion rates, top leads, activity timeline.
+    """
+    try:
+        result = supabase_client.table("leads").select("*").execute()
+        leads = result.data or []
+
+        # Pipeline funnel counts
+        stages = ["Visitor", "Engaged", "Qualified", "Hot Lead", "Approached"]
+        funnel = {s: 0 for s in stages}
+        score_buckets = {"0-20": 0, "21-40": 0, "41-60": 0, "61-80": 0, "81-100": 0}
+        total_score = 0
+        with_email = 0
+        with_company = 0
+        hot_leads = []
+
+        for lead in leads:
+            stage = lead.get("pipeline_status", "Visitor")
+            score = lead.get("lead_score", 0)
+            funnel[stage] = funnel.get(stage, 0) + 1
+            total_score += score
+
+            if score <= 20: score_buckets["0-20"] += 1
+            elif score <= 40: score_buckets["21-40"] += 1
+            elif score <= 60: score_buckets["41-60"] += 1
+            elif score <= 80: score_buckets["61-80"] += 1
+            else: score_buckets["81-100"] += 1
+
+            if lead.get("email"): with_email += 1
+            if lead.get("company"): with_company += 1
+            if score >= 70:
+                hot_leads.append({
+                    "session_id": lead["session_id"],
+                    "name": lead.get("name", "Anonymous"),
+                    "company": lead.get("company", "Unknown"),
+                    "score": score,
+                    "stage": stage,
+                    "email": lead.get("email"),
+                })
+
+        total = len(leads)
+        avg_score = round(total_score / total, 1) if total else 0
+
+        # Conversion rates
+        engaged_plus = sum(funnel.get(s, 0) for s in ["Engaged", "Qualified", "Hot Lead", "Approached"])
+        qualified_plus = sum(funnel.get(s, 0) for s in ["Qualified", "Hot Lead", "Approached"])
+        approached = funnel.get("Approached", 0)
+
+        conversion_rates = {
+            "visitor_to_engaged": round(engaged_plus / total * 100, 1) if total else 0,
+            "engaged_to_qualified": round(qualified_plus / engaged_plus * 100, 1) if engaged_plus else 0,
+            "qualified_to_approached": round(approached / qualified_plus * 100, 1) if qualified_plus else 0,
+            "overall_conversion": round(approached / total * 100, 1) if total else 0,
+        }
+
+        return {
+            "total_leads": total,
+            "average_score": avg_score,
+            "email_capture_rate": round(with_email / total * 100, 1) if total else 0,
+            "company_capture_rate": round(with_company / total * 100, 1) if total else 0,
+            "pipeline_funnel": funnel,
+            "score_distribution": score_buckets,
+            "conversion_rates": conversion_rates,
+            "hot_leads": sorted(hot_leads, key=lambda x: x["score"], reverse=True)[:10],
+        }
+    except Exception as e:
+        logger.error("Analytics error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/leads/search")
+async def search_leads(request: LeadSearchRequest):
+    """
+    Advanced lead search with filters, sorting, and pagination.
+    """
+    try:
+        query = supabase_client.table("leads").select("*", count="exact")
+
+        if request.pipeline_status:
+            query = query.eq("pipeline_status", request.pipeline_status)
+
+        query = query.gte("lead_score", request.min_score).lte("lead_score", request.max_score)
+
+        # Text search across name, company, email, needs
+        if request.query.strip():
+            search_term = request.query.strip()
+            query = query.or_(
+                f"name.ilike.%{search_term}%,"
+                f"company.ilike.%{search_term}%,"
+                f"email.ilike.%{search_term}%,"
+                f"needs.ilike.%{search_term}%,"
+                f"session_id.ilike.%{search_term}%"
+            )
+
+        is_desc = request.sort_order == "desc"
+        query = query.order(request.sort_by, desc=is_desc)
+        query = query.range(request.offset, request.offset + request.limit - 1)
+
+        result = query.execute()
+
+        return {
+            "leads": result.data or [],
+            "total": result.count if hasattr(result, "count") and result.count is not None else len(result.data or []),
+            "offset": request.offset,
+            "limit": request.limit,
+        }
+    except Exception as e:
+        logger.error("Lead search error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/conversations/{session_id}")
+async def get_conversations(session_id: str):
+    """
+    Retrieve full conversation history for a session.
+    """
+    try:
+        result = (
+            supabase_client.table("conversations")
+            .select("*")
+            .eq("session_id", session_id)
+            .order("created_at")
+            .execute()
+        )
+        messages = result.data or []
+
+        # Also fetch lead data for context
+        lead_result = (
+            supabase_client.table("leads")
+            .select("*")
+            .eq("session_id", session_id)
+            .execute()
+        )
+        lead = lead_result.data[0] if lead_result.data else None
+
+        return {
+            "session_id": session_id,
+            "message_count": len(messages),
+            "messages": messages,
+            "lead": lead,
+        }
+    except Exception as e:
+        logger.error("Conversation fetch error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/leads/{session_id}")
+async def delete_lead(session_id: str):
+    """Delete a lead and its conversations."""
+    try:
+        # Delete conversations first
+        supabase_client.table("conversations").delete().eq("session_id", session_id).execute()
+        # Delete the lead
+        result = supabase_client.table("leads").delete().eq("session_id", session_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        # Clean up chat session memory
+        chat_sessions.pop(session_id, None)
+        return {"success": True, "deleted_session": session_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Delete lead error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analytics/activity")
+async def analytics_activity():
+    """
+    Recent activity feed — last 50 lead updates for the activity timeline.
+    """
+    try:
+        result = (
+            supabase_client.table("leads")
+            .select("session_id,name,company,lead_score,pipeline_status,updated_at,email")
+            .order("updated_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        return {"activities": result.data or []}
+    except Exception as e:
+        logger.error("Activity feed error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/draft_email", response_model=DraftEmailResponse)
