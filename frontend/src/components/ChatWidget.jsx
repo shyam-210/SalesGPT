@@ -3,6 +3,8 @@ import { MessageCircle, X, Send } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import axios from 'axios'
 
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
 const TypingIndicator = () => (
     <motion.div
         initial={{ opacity: 0, y: 6 }}
@@ -32,7 +34,7 @@ const ChatWidget = () => {
     const messagesEndRef = useRef(null)
 
     useEffect(() => {
-        const sid = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        const sid = `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
         setSessionId(sid)
     }, [])
 
@@ -48,7 +50,7 @@ const ChatWidget = () => {
         setIsLoading(true)
 
         try {
-            const response = await axios.post('http://localhost:8000/chat', {
+            const response = await axios.post(`${API}/chat`, {
                 message: text.trim(),
                 session_id: sessionId
             })

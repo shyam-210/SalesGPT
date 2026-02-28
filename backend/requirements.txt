@@ -1,29 +1,29 @@
 # SalesGPT Backend - Python Dependencies
-# No version pins - pip will install latest compatible versions
+# Pin major versions for reproducible builds
 
 # ============================================
 # Web Framework
 # ============================================
-fastapi
-uvicorn[standard]
+fastapi>=0.109,<1.0
+uvicorn[standard]>=0.25,<1.0
 python-multipart
 
 # ============================================
 # Database & Supabase
 # ============================================
-supabase
+supabase>=2.0,<3.0
 postgrest
 storage3
 
 # ============================================
 # LangChain & RAG
 # ============================================
-langchain
-langchain-core
+langchain>=0.1,<1.0
+langchain-core>=0.1,<1.0
 langchain-text-splitters
 langchain-community
 langchain-huggingface
-langchain-groq
+langchain-groq>=0.1,<1.0
 
 # ============================================
 # Embeddings & Vector Search
@@ -37,20 +37,9 @@ huggingface-hub
 # Environment & Configuration
 # ============================================
 python-dotenv
-pydantic
-pydantic-settings
+pydantic>=2.0,<3.0
 
 # ============================================
-# Utilities
+# HTTP
 # ============================================
 httpx
-aiofiles
-python-jose[cryptography]
-passlib[bcrypt]
-
-# ============================================
-# Text Processing
-# ============================================
-tiktoken
-pypdf
-markdown

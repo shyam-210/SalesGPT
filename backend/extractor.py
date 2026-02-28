@@ -7,14 +7,17 @@ and updates the leads table.
 """
 
 import os
-import json
-from typing import List, Dict, Optional
+from typing import List, Dict
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 from supabase import create_client, Client
 
+from backend.utils import get_logger, format_conversation, extract_json
+
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # ============================================
 # Configuration
@@ -23,12 +26,12 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
+EXTRACTOR_MODEL = os.getenv("EXTRACTOR_MODEL", "llama-3.1-8b-instant")
 
 # Initialize Groq Model (fast model for extraction)
 extractor_model = ChatGroq(
     groq_api_key=GROQ_API_KEY,
-    model_name=CHAT_MODEL,
+    model_name=EXTRACTOR_MODEL,
     temperature=0,  # Deterministic extraction
     max_tokens=256
 )
@@ -80,10 +83,10 @@ async def extract_lead_data(session_id: str, chat_history: List[Dict[str, str]])
     
     Args:
         session_id: Unique session identifier
-        chat_history: List of message dicts with 'role' and 'text' keys
+        chat_history: List of message dicts with 'role' and 'text'/'content' keys
     """
     try:
-        print(f"\n[EMAIL] Extracting lead data for session: {session_id}")
+        logger.info("Extracting lead data for session: %s", session_id)
         
         # Step 1: Format conversation
         conversation_text = format_conversation(chat_history)
@@ -96,48 +99,24 @@ async def extract_lead_data(session_id: str, chat_history: List[Dict[str, str]])
         
         response = extractor_model.invoke(messages)
         
-        # Step 3: Parse JSON
-        try:
-            # Strip markdown code blocks if present
-            raw_content = response.content.strip()
-            if raw_content.startswith("```"):
-                # Remove markdown code fence
-                lines = raw_content.split('\n')
-                # Remove first line (```json or ```) and last line (```)
-                json_content = '\n'.join(lines[1:-1])
-            else:
-                json_content = raw_content
-            
-            extracted_data = json.loads(json_content.strip())
-            
-            # Filter out null values
-            clean_data = {k: v for k, v in extracted_data.items() if v is not None and v != ""}
-            
-            if clean_data:
-                print(f" Extracted: {', '.join([f'{k}={v}' for k, v in clean_data.items()])}")
-                
-                # Step 4: Update database
-                update_lead_data(session_id, clean_data)
-            else:
-                print("  No new data extracted")
-                
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] Failed to parse extraction JSON: {e}")
-            print(f"Raw response: {response.content}")
+        # Step 3: Parse JSON (robust extraction via shared util)
+        extracted_data = extract_json(response.content)
+
+        if extracted_data is None:
+            logger.warning("Failed to parse extraction JSON. Raw: %s", response.content[:200])
+            return
+
+        # Filter out null/empty values
+        clean_data = {k: v for k, v in extracted_data.items() if v is not None and v != ""}
+        
+        if clean_data:
+            logger.info("Extracted: %s", ", ".join(f"{k}={v}" for k, v in clean_data.items()))
+            update_lead_data(session_id, clean_data)
+        else:
+            logger.debug("No new data extracted for %s", session_id)
         
     except Exception as e:
-        print(f"[ERROR] Error in lead extraction: {e}")
-
-def format_conversation(chat_history: List[Dict[str, str]]) -> str:
-    """Format chat history for extraction."""
-    lines = []
-    for msg in chat_history:
-        role = "Customer" if msg["role"] == "user" else "Assistant"
-        # Support both 'text' (old format) and 'content' (new format)
-        message_text = msg.get('content') or msg.get('text', '')
-        lines.append(f"{role}: {message_text}")
-    
-    return "\n".join(lines)
+        logger.error("Error in lead extraction: %s", e, exc_info=True)
 
 def update_lead_data(session_id: str, data: Dict[str, str]):
     """
@@ -166,14 +145,14 @@ def update_lead_data(session_id: str, data: Dict[str, str]):
             
             if updates:
                 supabase_client.table("leads").update(updates).eq("session_id", session_id).execute()
-                print(f"[OK] Updated lead contact info: {session_id}")
+                logger.info("Updated lead contact info: %s", session_id)
             else:
-                print(f"  No new data to update for: {session_id}")
+                logger.debug("No new data to update for: %s", session_id)
         else:
             # Create new lead with extracted data
             data["session_id"] = session_id
             supabase_client.table("leads").insert(data).execute()
-            print(f"[OK] Created lead with contact info: {session_id}")
+            logger.info("Created lead with contact info: %s", session_id)
             
     except Exception as e:
-        print(f"[ERROR] Database error in extractor: {e}")
+        logger.error("Database error in extractor: %s", e)

@@ -9,21 +9,29 @@ Slow Track: Judge Agent + Extractor (async background)
 import os
 import json
 import re
+import traceback
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import List
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.messages import SystemMessage
 from supabase import create_client, Client
+
 from backend.judge import analyze_lead
 from backend.extractor import extract_lead_data
 from backend.email_intent_prompts import build_email_prompt
 from backend.cron import apply_time_decay
+from backend.utils import get_logger, extract_json
 
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # ============================================
 # Configuration
@@ -32,26 +40,46 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.1-8b-instant")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.3-70b-versatile")
+EMAIL_MODEL = os.getenv("EMAIL_MODEL", "llama-3.1-8b-instant")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", "3"))
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"
+).split(",")
 
 if not all([SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY]):
-    raise ValueError("Missing required environment variables")
+    raise ValueError("Missing required environment variables: SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY")
 
 # ============================================
-# Initialize FastAPI
+# Initialize FastAPI (lifespan replaces deprecated on_event)
 # ============================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application startup / shutdown lifecycle."""
+    logger.info("=" * 50)
+    logger.info("SalesGPT API Starting...")
+    logger.info("Supabase : %s", SUPABASE_URL)
+    logger.info("Chat Model : %s", CHAT_MODEL)
+    logger.info("Email Model : %s", EMAIL_MODEL)
+    logger.info("Embedding : %s", EMBEDDING_MODEL)
+    logger.info("Docs: http://localhost:8000/docs")
+    logger.info("=" * 50)
+    yield
+    logger.info("SalesGPT API shutting down.")
+
 
 app = FastAPI(
     title="SalesGPT API",
     description="Dual-track lead qualification system",
-    version="1.0.0"
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,52 +89,65 @@ app.add_middleware(
 # Initialize AI Models
 # ============================================
 
-print("[AI] Initializing Groq chat model...")
+logger.info("Initializing Groq chat model (70B versatile)...")
 chat_model = ChatGroq(
     groq_api_key=GROQ_API_KEY,
     model_name=CHAT_MODEL,
     temperature=0.7,
-    max_tokens=600  # Increased for detailed responses like quotations
+    max_tokens=800  # 70B model can leverage more tokens for detailed responses
 )
-print(f"[OK] Groq model initialized: {CHAT_MODEL}")
+logger.info("Chat model ready: %s", CHAT_MODEL)
 
-print("[BRAIN] Loading embedding model...")
+logger.info("Initializing email model (fast 8B)...")
+email_model = ChatGroq(
+    groq_api_key=GROQ_API_KEY,
+    model_name=EMAIL_MODEL,
+    temperature=0.3,  # Low temp for accurate, grounded email content
+    max_tokens=1024,
+)
+logger.info("Email model ready: %s", EMAIL_MODEL)
+
+logger.info("Loading embedding model...")
 embeddings = HuggingFaceEmbeddings(
     model_name=EMBEDDING_MODEL,
-    model_kwargs={'device': 'cpu'},
-    encode_kwargs={'normalize_embeddings': True}
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": True},
 )
-print(f"[OK] Embedding model loaded: {EMBEDDING_MODEL}")
+logger.info("Embedding model loaded: %s", EMBEDDING_MODEL)
 
-print("[LINK] Connecting to Supabase...")
+logger.info("Connecting to Supabase...")
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-print("[OK] Supabase client initialized")
+logger.info("Supabase client initialized")
 
-# In-memory chat history
-chat_sessions = {}
-print("[SAVE] Chat history storage initialized")
+# In-memory chat history (keyed by session_id)
+chat_sessions: dict[str, list[dict]] = {}
+logger.info("Chat session storage initialized")
 
 # ============================================
 # Pydantic Models
 # ============================================
 
 class ChatRequest(BaseModel):
-    message: str
-    session_id: str
+    message: str = Field(..., min_length=1, max_length=4096)
+    session_id: str = Field(..., min_length=1, max_length=128)
 
 class ChatResponse(BaseModel):
     response: str
     sources: List[str]
 
 class DraftEmailRequest(BaseModel):
-    session_id: str
+    session_id: str = Field(..., min_length=1, max_length=128)
 
 class DraftEmailResponse(BaseModel):
     subject: str
     body: str
 
 class UpdateLeadStatusRequest(BaseModel):
-    pipeline_status: str
+    pipeline_status: str = Field(
+        ...,
+        pattern=r"^(Visitor|Engaged|Qualified|Hot Lead|Approached)$",
+        description="Must be one of the valid pipeline stages",
+    )
 
 
 # ============================================
@@ -289,7 +330,7 @@ async def draft_email(request: DraftEmailRequest):
     Uses chat history and lead data to create a contextual, helpful email.
     """
     try:
-        print(f"\n[EMAIL] Drafting email for session: {request.session_id}")
+        logger.info("Drafting email for session: %s", request.session_id)
         
         # Fetch lead data
         lead_result = supabase_client.table("leads").select("*").eq("session_id", request.session_id).execute()
@@ -315,81 +356,60 @@ async def draft_email(request: DraftEmailRequest):
         email_intent = lead.get('email_intent', 'general_followup')
         email_context = lead.get('email_context', '')
         
-        print(f"[TARGET] Email Intent: {email_intent}")
-        print(f"[NOTE] Context: {email_context}")
-        print(f"[DATA] BANT Score: {lead.get('lead_score')} | Stage: {lead.get('pipeline_status')}")
+        logger.info("Email intent=%s | Score=%s | Stage=%s", email_intent, lead.get('lead_score'), lead.get('pipeline_status'))
+        logger.debug("Email context: %s", email_context)
         
         # Build email prompt using BANT analysis + intent + conversation
         email_prompt = build_email_prompt(lead, conversation_text, email_intent, email_context)
         
-        # Initialize email drafting model (GPT-OSS-120B) — low temperature for accuracy
-        email_model = ChatGroq(
-            groq_api_key=GROQ_API_KEY,
-            model_name="openai/gpt-oss-120b",
-            temperature=0.3,
-            max_tokens=1024
-        )
-        
-        print("[AI] Calling GPT-OSS-120B for email generation...")
+        logger.info("Calling %s for email generation...", EMAIL_MODEL)
         response = email_model.invoke([SystemMessage(content=email_prompt)])
         
-        # Parse JSON response (robust extraction)
+        # Parse JSON response (robust extraction via shared util)
         raw_content = response.content.strip()
+        email_data = extract_json(raw_content)
+
+        if email_data is None:
+            raise ValueError(f"LLM returned unparseable response: {raw_content[:200]}")
+
+        if "subject" not in email_data or "body" not in email_data:
+            raise ValueError(f"LLM JSON missing required keys: {list(email_data.keys())}")
         
-        # Strategy 1: Strip markdown code blocks if present
-        if raw_content.startswith("```"):
-            lines = raw_content.split('\n')
-            json_content = '\n'.join(lines[1:-1])
-        else:
-            json_content = raw_content
-        
-        # Strategy 2: If still invalid, try to find JSON object in the text
-        try:
-            email_data = json.loads(json_content)
-        except json.JSONDecodeError:
-            # Find the first { ... } block
-            match = re.search(r'\{[\s\S]*\}', raw_content)
-            if match:
-                email_data = json.loads(match.group(0))
-            else:
-                raise json.JSONDecodeError("No JSON object found", raw_content, 0)
-        
-        print(f"[OK] Email generated: {email_data['subject']}")
+        logger.info("Email generated: %s", email_data["subject"])
         
         return DraftEmailResponse(
             subject=email_data['subject'],
             body=email_data['body']
         )
         
-    except json.JSONDecodeError as e:
-        print(f"[ERROR] Failed to parse email JSON: {e}")
-        print(f"Raw response: {raw_content[:200]}")
-        raise HTTPException(status_code=500, detail="Failed to generate email. Invalid response format.")
+    except ValueError as e:
+        logger.error("Email generation error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] Error drafting email: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Error drafting email: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/leads/{session_id}")
 async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest):
     """Update lead pipeline status (e.g., mark as Approached)"""
     try:
-        print(f"\n[NOTE] Updating lead status: {session_id} -> {request.pipeline_status}")
+        logger.info("Updating lead status: %s -> %s", session_id, request.pipeline_status)
         
         result = supabase_client.table("leads").update({
             "pipeline_status": request.pipeline_status,
-            "updated_at": "NOW()"
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("session_id", session_id).execute()
         
         if not result.data:
             raise HTTPException(status_code=404, detail="Lead not found")
         
-        print(f"[OK] Lead status updated to: {request.pipeline_status}")
+        logger.info("Lead status updated to: %s", request.pipeline_status)
         return {"success": True, "lead": result.data[0]}
         
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[ERROR] Error updating lead status: {e}")
+        logger.error("Error updating lead status: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -404,7 +424,7 @@ async def force_decay():
     Useful for live demos to show score decay in real-time.
     """
     try:
-        print("\n[DECAY] Manual time-decay triggered by admin")
+        logger.info("Manual time-decay triggered by admin")
         summary = apply_time_decay()
         return {
             "success": True,
@@ -412,7 +432,7 @@ async def force_decay():
             "summary": summary
         }
     except Exception as e:
-        print(f"[ERROR] Force decay failed: {e}")
+        logger.error("Force decay failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -435,64 +455,54 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             "content": request.message
         })
         
-        print(f"\n[SEARCH] Query: {request.message[:50]}...")
+        logger.info("Query [%s]: %s", request.session_id[:12], request.message[:60])
         
-        # Build conversation history
-        history = "\n".join([
+        # Build conversation history (last 6 messages for context window)
+        history = "\n".join(
             f"{msg['role'].title()}: {msg['content']}"
             for msg in chat_sessions[request.session_id][-6:]
-        ])
+        )
         
         # ============================================
         # CONTEXTUAL RAG: Resolve pronouns using chat history
         # ============================================
         
-        # Check if query has vague pronouns that need context
-        vague_words = ['this', 'that', 'these', 'those', 'it', 'them']
-        has_vague_reference = any(word in request.message.lower().split() for word in vague_words)
+        vague_words = {"this", "that", "these", "those", "it", "them"}
+        has_vague_reference = bool(
+            vague_words & set(request.message.lower().split())
+        )
         
-        # Build contextual query for RAG
         if has_vague_reference and len(chat_sessions[request.session_id]) > 1:
-            # Get last 2 exchanges for context
-            recent_context = "\n".join([
+            recent_context = "\n".join(
                 f"{msg['role'].title()}: {msg['content']}"
                 for msg in chat_sessions[request.session_id][-4:]
-            ])
-            
-            # Combine context with current query
+            )
             contextual_query = f"{recent_context}\n\nCurrent question: {request.message}"
-            
-            print(f"[REFRESH] Contextual query: {request.message} (with history)")
+            logger.debug("Contextual RAG: augmented query with history")
         else:
-            # Use query as-is
             contextual_query = request.message
         
         # ============================================
         # FAST TRACK: RAG Retrieval
         # ============================================
         
-        # Generate embedding with contextual query
         query_embedding = embeddings.embed_query(contextual_query)
         
-        # Search Supabase
         result = supabase_client.rpc(
-            'match_documents',
-            {
-                'query_embedding': query_embedding,
-                'match_count': TOP_K_RESULTS
-            }
+            "match_documents",
+            {"query_embedding": query_embedding, "match_count": TOP_K_RESULTS},
         ).execute()
         
-        docs_data = result.data if result.data else []
-        print(f"[DOC] Found {len(docs_data)} documents")
+        docs_data = result.data or []
+        logger.info("RAG retrieved %d documents", len(docs_data))
         
         # Build context and sources
         if docs_data:
             context_parts = []
-            sources = []
+            sources: List[str] = []
             for doc in docs_data:
-                context_parts.append(doc.get('content', ''))
-                source = doc.get('metadata', {}).get('source', 'Unknown')
+                context_parts.append(doc.get("content", ""))
+                source = doc.get("metadata", {}).get("source", "Unknown")
                 if source not in sources:
                     sources.append(source)
             context = "\n\n".join(context_parts)
@@ -501,51 +511,58 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             sources = []
         
         # Fetch lead profile to know what info we have/need
+        known_info = "New conversation - no info yet."
         try:
-            lead_result = supabase_client.table("leads").select("*").eq("session_id", request.session_id).execute()
-            
+            lead_result = (
+                supabase_client.table("leads")
+                .select("company,email,name,role")
+                .eq("session_id", request.session_id)
+                .execute()
+            )
             if lead_result.data:
                 lead = lead_result.data[0]
-                known = []
-                
-                # Check what we know
-                if lead.get("company") and str(lead.get("company")).strip():
-                    known.append(f"Company: {lead['company']}")
-                
-                if lead.get("email") and str(lead.get("email")).strip():
-                    known.append(f"Email: {lead['email']}")
-                
-                if lead.get("name") and str(lead.get("name")).strip():
-                    known.append(f"Name: {lead['name']}")
-                
-                if lead.get("role") and str(lead.get("role")).strip():
-                    known.append(f"Role: {lead['role']}")
-                
-                known_info = " | ".join(known) if known else "New conversation - no info yet."
-            else:
-                known_info = "New conversation - no info yet."
-        except:
-            known_info = "New conversation - no info yet."
+                known = [
+                    f"{k.title()}: {lead[k]}"
+                    for k in ("name", "company", "email", "role")
+                    if lead.get(k) and str(lead[k]).strip()
+                ]
+                if known:
+                    known_info = " | ".join(known)
+        except Exception as exc:
+            logger.warning("Failed to fetch lead profile: %s", exc)
         
         # Generate response
         prompt = SYSTEM_PROMPT.format(
             known_info=known_info,
             history=history,
             context=context,
-            message=request.message
+            message=request.message,
         )
         
-        print("[AI] Generating response...")
+        logger.debug("Generating LLM response...")
         response = chat_model.invoke([SystemMessage(content=prompt)])
         answer = response.content.strip()
         
-        # Store bot response
+        # Store bot response in memory
         chat_sessions[request.session_id].append({
             "role": "assistant",
-            "content": answer
+            "content": answer,
         })
         
-        print(f"[OK] Response: {answer[:100]}...")
+        logger.info("Response [%s]: %s", request.session_id[:12], answer[:80])
+        
+        # ============================================
+        # Persist messages to Supabase conversations table
+        # ============================================
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        background_tasks.add_task(
+            _persist_messages,
+            request.session_id,
+            request.message,
+            answer,
+            now_iso,
+        )
         
         # ============================================
         # SLOW TRACK: Background Tasks
@@ -554,39 +571,52 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         background_tasks.add_task(
             analyze_lead,
             request.session_id,
-            chat_sessions[request.session_id]
+            chat_sessions[request.session_id],
         )
         
         background_tasks.add_task(
             extract_lead_data,
             request.session_id,
-            chat_sessions[request.session_id]
+            chat_sessions[request.session_id],
         )
         
         return ChatResponse(response=answer, sources=sources)
         
     except Exception as e:
-        print(f"[ERROR] Error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Chat error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ============================================
-# Startup Event
+# Helper: persist conversation to Supabase
 # ============================================
 
-@app.on_event("startup")
-async def startup():
-    print("\n" + "="*60)
-    print(" SalesGPT API Starting...")
-    print("="*60)
-    print(f" Supabase: {SUPABASE_URL}")
-    print(f"[AI] Chat Model: {CHAT_MODEL}")
-    print(f"[BRAIN] Embedding Model: {EMBEDDING_MODEL}")
-    print("="*60)
-    print("[OK] API Ready!")
-    print(" Docs: http://localhost:8000/docs")
-    print("="*60 + "\n")
+def _persist_messages(
+    session_id: str,
+    user_message: str,
+    assistant_message: str,
+    timestamp: str,
+) -> None:
+    """Write user + assistant messages to the ``conversations`` table and
+    update the lead's ``last_active`` timestamp so time-decay works correctly."""
+    try:
+        supabase_client.table("conversations").insert([
+            {"session_id": session_id, "role": "user", "message": user_message},
+            {"session_id": session_id, "role": "assistant", "message": assistant_message},
+        ]).execute()
+
+        # Touch last_active so time-decay knows the lead is still active
+        supabase_client.table("leads").update({
+            "last_active": timestamp,
+            "updated_at": timestamp,
+        }).eq("session_id", session_id).execute()
+    except Exception as exc:
+        logger.warning("Failed to persist conversation: %s", exc)
+
+
+# ============================================
+# Entrypoint
+# ============================================
 
 if __name__ == "__main__":
     import uvicorn

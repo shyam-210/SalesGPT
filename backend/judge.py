@@ -7,14 +7,18 @@ conversations in the background to score leads using the BANT framework.
 """
 
 import os
-import json
+import traceback
 from typing import List, Dict
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 from supabase import create_client, Client
 
+from backend.utils import get_logger, format_conversation, extract_json
+
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # ============================================
 # Configuration
@@ -171,10 +175,10 @@ async def analyze_lead(session_id: str, chat_history: List[Dict[str, str]]):
     
     Args:
         session_id: Unique session identifier
-        chat_history: List of message dicts with 'role' and 'text' keys
+        chat_history: List of message dicts with 'role' and 'text'/'content' keys
     """
     try:
-        print(f"\n[SEARCH] Judge analyzing session: {session_id}")
+        logger.info("Judge analyzing session: %s", session_id)
         
         # Step 1: Format conversation for Judge
         conversation_text = format_conversation(chat_history)
@@ -185,59 +189,32 @@ async def analyze_lead(session_id: str, chat_history: List[Dict[str, str]]):
             HumanMessage(content=f"Conversation:\n{conversation_text}\n\nAnalyze this lead:")
         ]
         
-        print(f"[AI] Calling Judge Model ({JUDGE_MODEL})...")
+        logger.info("Calling Judge Model (%s)...", JUDGE_MODEL)
         response = judge_model.invoke(messages)
         
-        # Step 3: Parse JSON response
-        try:
-            result = json.loads(response.content.strip())
-            score = result.get("score", 0)
-            stage = result.get("stage", "Visitor")
-            reasoning = result.get("reasoning", "No reasoning provided")
-            email_intent = result.get("email_intent", "general_followup")
-            email_context = result.get("email_context", "")
-            
-            print(f"[DATA] Score: {score} | Stage: {stage} | Intent: {email_intent}")
-            print(f"[THOUGHT] Reasoning: {reasoning}")
-            
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] Failed to parse JSON: {e}")
-            print(f"Raw response: {response.content}")
-            # Fallback values
-            score = 0
-            stage = "Visitor"
-            reasoning = f"Error parsing response: {response.content[:100]}"
-            email_intent = "general_followup"
-            email_context = ""
+        # Step 3: Parse JSON response (with robust fallback)
+        result = extract_json(response.content)
+
+        if result is None:
+            logger.error("Failed to parse Judge JSON. Raw: %s", response.content[:200])
+            result = {}
+
+        score = result.get("score", 0)
+        stage = result.get("stage", "Visitor")
+        reasoning = result.get("reasoning", "No reasoning provided")
+        email_intent = result.get("email_intent", "general_followup")
+        email_context = result.get("email_context", "")
+        
+        logger.info("Score: %d | Stage: %s | Intent: %s", score, stage, email_intent)
+        logger.debug("Reasoning: %s", reasoning)
         
         # Step 4: Update/Insert lead in Supabase
         update_lead_in_db(session_id, score, stage, reasoning, email_intent, email_context)
         
-        print(f"[OK] Lead analysis complete for {session_id}\n")
+        logger.info("Lead analysis complete for %s", session_id)
         
     except Exception as e:
-        print(f"[ERROR] Error in Judge Agent: {e}")
-        import traceback
-        traceback.print_exc()
-
-def format_conversation(chat_history: List[Dict[str, str]]) -> str:
-    """
-    Format chat history into a readable string for the Judge.
-    
-    Args:
-        chat_history: List of message dicts
-        
-    Returns:
-        Formatted conversation string
-    """
-    lines = []
-    for msg in chat_history:
-        role = "Customer" if msg["role"] == "user" else "Assistant"
-        # Support both 'text' (old format) and 'content' (new format)
-        message_text = msg.get('content') or msg.get('text', '')
-        lines.append(f"{role}: {message_text}")
-    
-    return "\n".join(lines)
+        logger.error("Error in Judge Agent: %s", e, exc_info=True)
 
 def update_lead_in_db(session_id: str, score: int, stage: str, reasoning: str, email_intent: str = "general_followup", email_context: str = ""):
     """
@@ -265,7 +242,7 @@ def update_lead_in_db(session_id: str, score: int, stage: str, reasoning: str, e
                 "email_context": email_context
             }).eq("session_id", session_id).execute()
             
-            print(f"[NOTE] Updated existing lead: {session_id}")
+            logger.info("Updated existing lead: %s", session_id)
         else:
             # Insert new lead
             supabase_client.table("leads").insert({
@@ -277,9 +254,7 @@ def update_lead_in_db(session_id: str, score: int, stage: str, reasoning: str, e
                 "email_context": email_context
             }).execute()
             
-            print(f"[NOTE] Created new lead: {session_id}")
+            logger.info("Created new lead: %s", session_id)
             
     except Exception as e:
-        print(f"[ERROR] Database error: {e}")
-        # Don't print full traceback - just log the error
-        print(f"   Attempted to save: session={session_id}, score={score}, stage={stage}")
+        logger.error("Database error: %s (session=%s, score=%d, stage=%s)", e, session_id, score, stage)

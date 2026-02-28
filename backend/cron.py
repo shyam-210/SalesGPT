@@ -11,11 +11,16 @@ Logic:
 
 import os
 import math
+import traceback
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
+from backend.utils import get_logger
+
 load_dotenv()
+
+logger = get_logger(__name__)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -52,7 +57,7 @@ def apply_time_decay() -> dict:
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=INACTIVE_THRESHOLD_HOURS)
 
-        print(f"[DECAY] Checking {len(leads)} leads for inactivity (cutoff: {cutoff.isoformat()})")
+        logger.info("Checking %d leads for inactivity (cutoff: %s)", len(leads), cutoff.isoformat())
 
         for lead in leads:
             session_id = lead["session_id"]
@@ -101,16 +106,14 @@ def apply_time_decay() -> dict:
             }).eq("session_id", session_id).execute()
 
             detail = f"{session_id[:20]}... {old_score}->{new_score} ({old_stage}->{new_stage})"
-            summary["details"].append(detail)
             summary["updated"] += 1
-            print(f"  [DECAY] {detail}")
+            summary["details"].append(detail)
+            logger.info("DECAY %s", detail)
 
-        print(f"[DECAY] Done: {summary['updated']} updated, {summary['skipped']} skipped")
+        logger.info("Decay complete: %d updated, %d skipped", summary['updated'], summary['skipped'])
 
     except Exception as e:
-        print(f"[ERROR] Time-decay error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Time-decay error: %s", e, exc_info=True)
         summary["error"] = str(e)
 
     return summary

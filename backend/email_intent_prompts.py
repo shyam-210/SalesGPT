@@ -104,8 +104,13 @@ INTENT_DIRECTIVES = {
 # Tone Mapping from BANT Score
 # ============================================
 
-def _get_tone_from_bant(score: int, stage: str) -> str:
-    """Derive email tone from BANT score/stage so the email matches lead warmth."""
+def _get_tone_from_bant(score: int, stage: str = "") -> str:
+    """Derive email tone from BANT score so the email matches lead warmth.
+    
+    Args:
+        score: BANT score (0-100).
+        stage: Pipeline stage (reserved for future per-stage overrides).
+    """
     if score >= 71:
         return (
             "Warm and action-oriented. This is a hot lead — they have budget, "

@@ -4,7 +4,16 @@ import { supabase } from '../lib/supabase'
 import { ArrowLeft, RefreshCw, TrendingUp, Users, Target, Flame, X, Mail, Copy, Check, Send, Zap, Clock } from 'lucide-react'
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+/* Tailwind purges dynamic classes — use explicit maps */
+const STAGE_BADGE_STYLES = {
+    slate:   'bg-slate-900/40 text-slate-400 border-slate-700/50',
+    blue:    'bg-blue-900/40 text-blue-400 border-blue-700/50',
+    amber:   'bg-amber-900/40 text-amber-400 border-amber-700/50',
+    emerald: 'bg-emerald-900/40 text-emerald-400 border-emerald-700/50',
+    purple:  'bg-purple-900/40 text-purple-400 border-purple-700/50',
+}
 
 const Dashboard = () => {
     const [leads, setLeads] = useState([])
@@ -376,7 +385,7 @@ const LeadDetailModal = ({ lead, color, onClose }) => {
                 {/* Pipeline Status */}
                 <div className="mb-6">
                     <p className="text-slate-500 text-xs uppercase tracking-wider mb-2">Pipeline Status</p>
-                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold bg-${color}-900/40 text-${color}-400 border border-${color}-700/50`}>
+                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold border ${STAGE_BADGE_STYLES[color] || STAGE_BADGE_STYLES.slate}`}>
                         {lead.pipeline_status}
                     </span>
                 </div>
