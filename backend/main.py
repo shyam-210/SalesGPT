@@ -15,12 +15,13 @@ from datetime import datetime, timezone
 from typing import List
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.messages import SystemMessage
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from supabase import create_client, Client
 
 from backend.judge import analyze_lead
@@ -323,6 +324,9 @@ async def root():
             "activity_feed": "/analytics/activity",
             "conversations": "/conversations/{session_id}",
             "draft_email": "/draft_email",
+            "documents": "/documents",
+            "documents_upload": "/documents/upload",
+            "documents_delete": "/documents/{source}",
             "docs": "/docs",
         },
     }
@@ -622,6 +626,132 @@ async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest):
         raise
     except Exception as e:
         logger.error("Error updating lead status: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# Document Management Endpoints (Dynamic RAG)
+# ============================================
+
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 50
+
+
+@app.get("/documents")
+async def list_documents():
+    """List all documents in the knowledge base, grouped by source."""
+    try:
+        result = supabase_client.table("documents").select("id,metadata").execute()
+        rows = result.data or []
+
+        source_map: dict[str, int] = {}
+        for row in rows:
+            source = (row.get("metadata") or {}).get("source", "unknown")
+            source_map[source] = source_map.get(source, 0) + 1
+
+        documents = [
+            {"source": src, "chunk_count": cnt}
+            for src, cnt in sorted(source_map.items())
+        ]
+        return {"documents": documents, "total_chunks": len(rows)}
+    except Exception as e:
+        logger.error("List documents error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/documents/upload")
+async def upload_document(file: UploadFile = File(...)):
+    """Upload a .md file: chunk, embed and store in the vector database."""
+    if not file.filename or not file.filename.endswith(".md"):
+        raise HTTPException(status_code=400, detail="Only .md files are supported")
+
+    try:
+        raw = await file.read()
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be valid UTF-8 text")
+
+    source_name = file.filename
+    logger.info("Uploading document: %s (%d bytes)", source_name, len(raw))
+
+    try:
+        # Remove any existing chunks from this source before re-uploading
+        existing = (
+            supabase_client.table("documents")
+            .select("id,metadata")
+            .execute()
+        )
+        ids_to_delete = [
+            r["id"] for r in (existing.data or [])
+            if (r.get("metadata") or {}).get("source") == source_name
+        ]
+        if ids_to_delete:
+            for i in range(0, len(ids_to_delete), 100):
+                batch = ids_to_delete[i:i + 100]
+                supabase_client.table("documents").delete().in_("id", batch).execute()
+            logger.info("Cleared %d existing chunks for %s", len(ids_to_delete), source_name)
+
+        # Chunk the document
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""],
+        )
+        chunks = splitter.split_text(content)
+
+        if not chunks:
+            raise HTTPException(status_code=400, detail="File produced no text chunks")
+
+        # Embed and prepare records
+        records = []
+        for chunk_text in chunks:
+            embedding = embeddings.embed_query(chunk_text)
+            records.append({
+                "content": chunk_text,
+                "embedding": embedding,
+                "metadata": {"source": source_name, "filename": source_name.replace(".md", "")},
+            })
+
+        # Upload in batches
+        BATCH_SIZE = 100
+        for i in range(0, len(records), BATCH_SIZE):
+            supabase_client.table("documents").insert(records[i:i + BATCH_SIZE]).execute()
+
+        logger.info("Uploaded %d chunks for %s", len(records), source_name)
+        return {"success": True, "source": source_name, "chunks_created": len(records)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Document upload error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/documents/{source}")
+async def delete_document(source: str):
+    """Delete all chunks belonging to a document source."""
+    try:
+        result = supabase_client.table("documents").select("id,metadata").execute()
+        ids_to_delete = [
+            r["id"] for r in (result.data or [])
+            if (r.get("metadata") or {}).get("source") == source
+        ]
+
+        if not ids_to_delete:
+            raise HTTPException(status_code=404, detail=f"No document found with source '{source}'")
+
+        for i in range(0, len(ids_to_delete), 100):
+            batch = ids_to_delete[i:i + 100]
+            supabase_client.table("documents").delete().in_("id", batch).execute()
+
+        logger.info("Deleted %d chunks for source: %s", len(ids_to_delete), source)
+        return {"success": True, "source": source, "chunks_deleted": len(ids_to_delete)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Document delete error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

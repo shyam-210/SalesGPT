@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import {
     ArrowLeft, RefreshCw, TrendingUp, Users, Target, Flame, X, Mail, Copy, Check,
     Send, Zap, Clock, Search, Filter, BarChart3, Activity, ChevronDown, ChevronUp,
-    MessageSquare, Trash2, Eye, Percent
+    MessageSquare, Trash2, Eye, Percent, Upload, FileText, Database, AlertCircle
 } from 'lucide-react'
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
 
@@ -23,6 +24,10 @@ const STAGE_COLORS = {
     'Hot Lead': 'emerald', 'Approached': 'purple',
 }
 
+/* ========== Portal wrapper — renders children at document.body ========== */
+const Portal = ({ children }) => createPortal(children, document.body)
+
+/* ========== Main Dashboard ========== */
 const Dashboard = () => {
     const [leads, setLeads] = useState([])
     const [loading, setLoading] = useState(true)
@@ -33,42 +38,39 @@ const Dashboard = () => {
     const [stageFilter, setStageFilter] = useState('')
     const navigate = useNavigate()
 
-    useEffect(() => {
-        fetchLeads(); fetchAnalytics()
-        const unsub = subscribeToLeads()
-        return unsub
-    }, [])
-
-    const fetchLeads = async () => {
+    const fetchLeads = useCallback(async () => {
         try {
             const { data, error } = await supabase.from('leads').select('*').order('lead_score', { ascending: false })
             if (error) throw error
             setLeads(data || [])
         } catch (error) { console.error('Error fetching leads:', error) }
         finally { setLoading(false) }
-    }
+    }, [])
 
-    const fetchAnalytics = async () => {
+    const fetchAnalytics = useCallback(async () => {
         try {
             const res = await fetch(`${API}/analytics/dashboard`)
             if (res.ok) setAnalytics(await res.json())
         } catch (err) { console.error('Analytics fetch failed:', err) }
-    }
+    }, [])
 
-    const subscribeToLeads = () => {
-        const channel = supabase.channel('leads-changes')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, (payload) => {
-                handleRealtimeUpdate(payload); fetchAnalytics()
-            }).subscribe()
-        return () => supabase.removeChannel(channel)
-    }
+    useEffect(() => {
+        fetchLeads()
+        fetchAnalytics()
 
-    const handleRealtimeUpdate = (payload) => {
-        const { eventType, new: n, old: o } = payload
-        if (eventType === 'INSERT') setLeads(p => [n, ...p])
-        else if (eventType === 'UPDATE') setLeads(p => p.map(l => l.id === n.id ? n : l))
-        else if (eventType === 'DELETE') setLeads(p => p.filter(l => l.id !== o.id))
-    }
+        // Realtime: any change to leads triggers a full refetch.
+        // This avoids race conditions from rapid INSERT→UPDATE sequences
+        // when the Judge and Extractor score leads in the background.
+        const channel = supabase
+            .channel('leads-realtime')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => {
+                fetchLeads()
+                fetchAnalytics()
+            })
+            .subscribe()
+
+        return () => { supabase.removeChannel(channel) }
+    }, [fetchLeads, fetchAnalytics])
 
     const triggerDecay = async () => {
         try { setDecaying(true); await fetch(`${API}/admin/force_decay`, { method: 'POST' }); await fetchLeads(); await fetchAnalytics() }
@@ -78,7 +80,7 @@ const Dashboard = () => {
     const deleteLead = async (sid) => {
         try {
             const res = await fetch(`${API}/leads/${sid}`, { method: 'DELETE' })
-            if (res.ok) { setLeads(p => p.filter(l => l.session_id !== sid)); fetchAnalytics() }
+            if (res.ok) { await fetchLeads(); fetchAnalytics() }
         } catch (err) { console.error('Delete failed:', err) }
     }
 
@@ -116,7 +118,7 @@ const Dashboard = () => {
                 <div className="flex items-center justify-between flex-wrap gap-4">
                     <div>
                         <h1 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent mb-1">Command Center</h1>
-                        <p className="text-slate-500 text-xs sm:text-sm tracking-wide">Real-time lead intelligence &middot; BANT scoring &middot; AI email &middot; Analytics</p>
+                        <p className="text-slate-500 text-xs sm:text-sm tracking-wide">Real-time lead intelligence &middot; BANT scoring &middot; AI email &middot; Knowledge base</p>
                     </div>
                     <div className="flex gap-2 flex-wrap">
                         <button onClick={triggerDecay} disabled={decaying} className="flex items-center gap-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-700/50 px-3 py-2 rounded-xl transition-all text-xs font-medium disabled:opacity-50">
@@ -133,7 +135,12 @@ const Dashboard = () => {
 
                 {/* Tabs */}
                 <div className="flex gap-1 mt-5 bg-slate-900/60 p-1 rounded-xl border border-slate-800/60 w-fit">
-                    {[{ id: 'pipeline', label: 'Pipeline', icon: Target }, { id: 'analytics', label: 'Analytics', icon: BarChart3 }, { id: 'activity', label: 'Activity', icon: Activity }].map(tab => (
+                    {[
+                        { id: 'pipeline', label: 'Pipeline', icon: Target },
+                        { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+                        { id: 'activity', label: 'Activity', icon: Activity },
+                        { id: 'knowledge', label: 'Knowledge Base', icon: Database },
+                    ].map(tab => (
                         <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition-all ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'}`}>
                             <tab.icon size={14} />{tab.label}
                         </button>
@@ -172,14 +179,175 @@ const Dashboard = () => {
                                 })}
                             </div>
 
-                            <LayoutGroup><div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
                                 {columns.map(column => <KanbanColumn key={column.stage} {...column} leads={getLeadsByStage(column.stage)} onLeadUpdate={() => { fetchLeads(); fetchAnalytics() }} onDeleteLead={deleteLead} />)}
-                            </div></LayoutGroup>
+                            </div>
                         </motion.div>
                     )}
                     {activeTab === 'analytics' && <motion.div key="analytics" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><AnalyticsPanel analytics={analytics} /></motion.div>}
                     {activeTab === 'activity' && <motion.div key="activity" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><ActivityFeed leads={leads} /></motion.div>}
+                    {activeTab === 'knowledge' && <motion.div key="knowledge" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><KnowledgeBasePanel /></motion.div>}
                 </AnimatePresence>
+            </div>
+        </div>
+    )
+}
+
+/* ========== Knowledge Base Panel ========== */
+const KnowledgeBasePanel = () => {
+    const [documents, setDocuments] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [uploading, setUploading] = useState(false)
+    const [deleting, setDeleting] = useState(null)
+    const [error, setError] = useState(null)
+    const [success, setSuccess] = useState(null)
+    const fileInputRef = useRef(null)
+
+    useEffect(() => { fetchDocuments() }, [])
+
+    const fetchDocuments = async () => {
+        setLoading(true)
+        try {
+            const res = await fetch(`${API}/documents`)
+            if (!res.ok) throw new Error('Failed to fetch documents')
+            const data = await res.json()
+            setDocuments(data.documents || [])
+        } catch (err) {
+            console.error('Failed to load documents:', err)
+            setError('Failed to load documents')
+        } finally { setLoading(false) }
+    }
+
+    const handleUpload = async (e) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+        if (!file.name.endsWith('.md')) {
+            setError('Only .md (Markdown) files are supported')
+            return
+        }
+
+        setUploading(true)
+        setError(null)
+        setSuccess(null)
+        try {
+            const formData = new FormData()
+            formData.append('file', file)
+            const res = await fetch(`${API}/documents/upload`, { method: 'POST', body: formData })
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}))
+                throw new Error(errData.detail || 'Upload failed')
+            }
+            const data = await res.json()
+            setSuccess(`Uploaded "${file.name}" — ${data.chunks_created} chunks embedded`)
+            await fetchDocuments()
+        } catch (err) {
+            setError(err.message || 'Upload failed')
+        } finally {
+            setUploading(false)
+            if (fileInputRef.current) fileInputRef.current.value = ''
+        }
+    }
+
+    const handleDelete = async (source) => {
+        setDeleting(source)
+        setError(null)
+        setSuccess(null)
+        try {
+            const res = await fetch(`${API}/documents/${encodeURIComponent(source)}`, { method: 'DELETE' })
+            if (!res.ok) throw new Error('Delete failed')
+            const data = await res.json()
+            setSuccess(`Deleted "${source}" — ${data.chunks_deleted} chunks removed`)
+            await fetchDocuments()
+        } catch (err) {
+            setError(err.message || 'Delete failed')
+        } finally { setDeleting(null) }
+    }
+
+    const totalChunks = documents.reduce((sum, d) => sum + d.chunk_count, 0)
+
+    return (
+        <div className="space-y-6">
+            {/* Header + Upload */}
+            <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                    <h3 className="text-white font-semibold text-lg flex items-center gap-2"><Database size={20} className="text-indigo-400" /> Knowledge Base</h3>
+                    <p className="text-slate-500 text-xs mt-1">Upload or remove Markdown files to dynamically update the RAG vector database</p>
+                </div>
+                <div className="flex items-center gap-3">
+                    <span className="text-xs text-slate-500">{documents.length} files &middot; {totalChunks} chunks</span>
+                    <label className={`flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl transition-all text-xs font-medium shadow-lg shadow-indigo-600/20 cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
+                        {uploading ? <RefreshCw size={14} className="animate-spin" /> : <Upload size={14} />}
+                        {uploading ? 'Processing...' : 'Upload .md File'}
+                        <input ref={fileInputRef} type="file" accept=".md" onChange={handleUpload} className="hidden" disabled={uploading} />
+                    </label>
+                </div>
+            </div>
+
+            {/* Status messages */}
+            <AnimatePresence>
+                {error && (
+                    <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="bg-red-900/20 border border-red-800/50 rounded-xl p-3 flex items-center gap-2">
+                        <AlertCircle size={16} className="text-red-400 flex-shrink-0" />
+                        <p className="text-red-400 text-sm flex-1">{error}</p>
+                        <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300"><X size={14} /></button>
+                    </motion.div>
+                )}
+                {success && (
+                    <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="bg-emerald-900/20 border border-emerald-800/50 rounded-xl p-3 flex items-center gap-2">
+                        <Check size={16} className="text-emerald-400 flex-shrink-0" />
+                        <p className="text-emerald-400 text-sm flex-1">{success}</p>
+                        <button onClick={() => setSuccess(null)} className="text-emerald-400 hover:text-emerald-300"><X size={14} /></button>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Document List */}
+            <div className="bg-slate-900/60 backdrop-blur-sm rounded-2xl border border-slate-800/60 overflow-hidden">
+                {loading ? (
+                    <div className="flex items-center justify-center py-16"><RefreshCw size={24} className="animate-spin text-indigo-500" /></div>
+                ) : documents.length === 0 ? (
+                    <div className="text-center py-16 px-6">
+                        <FileText size={40} className="text-slate-700 mx-auto mb-4" />
+                        <p className="text-slate-500 text-sm">No documents in the knowledge base</p>
+                        <p className="text-slate-600 text-xs mt-1">Upload a .md file to get started</p>
+                    </div>
+                ) : (
+                    <div className="divide-y divide-slate-800/60">
+                        {documents.map((doc, i) => (
+                            <motion.div
+                                key={doc.source}
+                                initial={{ opacity: 0, x: -10 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: i * 0.03 }}
+                                className="flex items-center justify-between p-4 hover:bg-slate-800/30 transition-colors"
+                            >
+                                <div className="flex items-center gap-3 min-w-0">
+                                    <div className="p-2 rounded-lg bg-indigo-600/15 flex-shrink-0">
+                                        <FileText size={16} className="text-indigo-400" />
+                                    </div>
+                                    <div className="min-w-0">
+                                        <p className="text-white text-sm font-medium truncate">{doc.source}</p>
+                                        <p className="text-slate-500 text-[10px]">{doc.chunk_count} chunks embedded</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => handleDelete(doc.source)}
+                                    disabled={deleting === doc.source}
+                                    className="flex items-center gap-1.5 bg-red-600/10 hover:bg-red-600/20 text-red-400 px-3 py-1.5 rounded-lg transition-all text-xs font-medium border border-red-700/30 disabled:opacity-50 flex-shrink-0"
+                                >
+                                    {deleting === doc.source ? <RefreshCw size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                                    Remove
+                                </button>
+                            </motion.div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Info Box */}
+            <div className="bg-slate-900/40 border border-slate-800/50 rounded-xl p-4 text-xs text-slate-500 leading-relaxed">
+                <p className="font-medium text-slate-400 mb-1">How it works</p>
+                <p>When you upload a .md file, it is split into ~500-character chunks, each chunk is embedded using MiniLM-L6-v2, and the embeddings are stored in the pgvector database. The RAG chatbot will immediately start using the new content. Deleting a document removes all its chunks from the vector store.</p>
             </div>
         </div>
     )
@@ -305,7 +473,7 @@ const LeadCard = ({ lead, color, stage, onLeadUpdate, onDeleteLead }) => {
     const showDraftEmail = stage === 'Qualified' || stage === 'Hot Lead'
 
     return (<>
-        <motion.div layout layoutId={`lead-${lead.id}`} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }} whileHover={{ y: -2, transition: { duration: 0.15 } }} className="bg-slate-800/80 backdrop-blur-sm rounded-xl p-3 border border-slate-700/60 hover:border-slate-600 hover:shadow-xl hover:shadow-indigo-500/5 transition-all cursor-pointer group">
+        <motion.div layout="position" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }} whileHover={{ y: -2, transition: { duration: 0.15 } }} className="bg-slate-800/80 backdrop-blur-sm rounded-xl p-3 border border-slate-700/60 hover:border-slate-600 hover:shadow-xl hover:shadow-indigo-500/5 transition-all cursor-pointer group">
             <div className="mb-2"><p className="text-white font-semibold text-xs group-hover:text-indigo-300 transition-colors truncate">{lead.name || 'Anonymous'}</p><p className="text-slate-500 text-[10px] truncate">{lead.company || 'Unknown company'}</p></div>
             <div className="flex items-center justify-between mb-1.5"><span className="text-slate-600 text-[9px] font-mono truncate max-w-[80px]">{truncId(lead.session_id)}</span><span className={`text-lg font-bold tabular-nums ${getScoreColor(lead.lead_score)}`}>{lead.lead_score}</span></div>
             <div className="w-full bg-slate-700/50 rounded-full h-1 mb-2.5 overflow-hidden"><motion.div className={`h-1 rounded-full ${getBarColor(lead.lead_score)}`} initial={{ width: 0 }} animate={{ width: `${lead.lead_score}%` }} transition={{ duration: 0.6 }} /></div>
@@ -317,23 +485,25 @@ const LeadCard = ({ lead, color, stage, onLeadUpdate, onDeleteLead }) => {
             </div>
             <p className="text-slate-600 text-[9px] mt-1.5">{timeAgo(lead.updated_at || lead.created_at)}</p>
         </motion.div>
-        {showModal && <LeadDetailModal lead={lead} color={color} onClose={() => setShowModal(false)} />}
-        {showEmailModal && <EmailDraftModal lead={lead} onClose={() => setShowEmailModal(false)} onLeadUpdate={onLeadUpdate} />}
+
+        {/* Modals rendered via Portal — escape the overflow/transform context */}
+        {showModal && <Portal><LeadDetailModal lead={lead} color={color} onClose={() => setShowModal(false)} /></Portal>}
+        {showEmailModal && <Portal><EmailDraftModal lead={lead} onClose={() => setShowEmailModal(false)} onLeadUpdate={onLeadUpdate} /></Portal>}
     </>)
 }
 
-/* ========== Lead Detail Modal with Conversation Viewer ========== */
+/* ========== Lead Detail Modal ========== */
 const LeadDetailModal = ({ lead, color, onClose }) => {
     const [convos, setConvos] = useState([])
     const [loadingC, setLoadingC] = useState(false)
     const [showC, setShowC] = useState(false)
     const getScoreColor = (s) => s >= 70 ? 'text-emerald-400' : s >= 30 ? 'text-amber-400' : 'text-red-400'
 
-    const fetchConvos = async () => { setLoadingC(true); try { const r = await fetch(`${API}/conversations/${lead.session_id}`); if (r.ok) { const d = await r.json(); setConvos(d.messages || []) } } catch {} finally { setLoadingC(false) } }
+    const fetchConvos = async () => { setLoadingC(true); try { const r = await fetch(`${API}/conversations/${lead.session_id}`); if (r.ok) { const d = await r.json(); setConvos(d.messages || []) } } catch (err) { console.error('Failed to load conversations:', err) } finally { setLoadingC(false) } }
     const toggleC = () => { if (!showC && convos.length === 0) fetchConvos(); setShowC(!showC) }
 
     return (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999] p-4" onClick={onClose}>
             <motion.div initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.92 }} transition={{ type: 'spring', damping: 25, stiffness: 350 }} onClick={e => e.stopPropagation()} className="bg-slate-900/95 backdrop-blur-xl rounded-2xl p-6 max-w-2xl w-full max-h-[85vh] overflow-y-auto border border-slate-800 shadow-2xl scrollbar-thin">
                 <div className="flex items-center justify-between mb-6"><h2 className="text-2xl font-bold text-white">Lead Details</h2><button onClick={onClose} className="text-slate-500 hover:text-white transition-colors"><X size={22} /></button></div>
 
@@ -406,7 +576,7 @@ const EmailDraftModal = ({ lead, onClose, onLeadUpdate }) => {
     }
 
     return (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999] p-4" onClick={onClose}>
             <motion.div initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.92 }} transition={{ type: 'spring', damping: 25, stiffness: 350 }} onClick={e => e.stopPropagation()} className="bg-slate-900/95 backdrop-blur-xl rounded-2xl p-6 max-w-3xl w-full max-h-[80vh] overflow-y-auto border border-slate-800 shadow-2xl">
                 <div className="flex items-center justify-between mb-6">
                     <div className="flex items-center gap-3"><div className="p-2 bg-indigo-600/20 rounded-lg"><Zap size={20} className="text-indigo-400" /></div><div><h2 className="text-xl font-bold text-white">AI Email Draft</h2><p className="text-slate-500 text-xs">Powered by BANT analysis</p></div></div>
