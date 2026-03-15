@@ -94,7 +94,11 @@ CREATE TABLE IF NOT EXISTS leads (
   email TEXT,
   phone TEXT,
   role TEXT,
-  needs TEXT
+  needs TEXT,
+  
+  -- Email Intent (for dynamic email generation)
+  email_intent TEXT,
+  email_context TEXT
 );
 
 -- Indexes for fast lookups
@@ -102,6 +106,21 @@ CREATE INDEX IF NOT EXISTS idx_leads_session_id ON leads(session_id);
 CREATE INDEX IF NOT EXISTS idx_leads_pipeline_status ON leads(pipeline_status);
 CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(lead_score DESC);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
+
+-- Auto-update updated_at on every row change
+CREATE OR REPLACE FUNCTION update_leads_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_leads_updated_at ON leads;
+CREATE TRIGGER trg_leads_updated_at
+  BEFORE UPDATE ON leads
+  FOR EACH ROW
+  EXECUTE FUNCTION update_leads_updated_at();
 
 -- Foreign key to chats (optional)
 -- ALTER TABLE leads 

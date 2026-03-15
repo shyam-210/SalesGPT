@@ -36,7 +36,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    print("❌ Error: SUPABASE_URL and SUPABASE_KEY must be set in .env file")
+    print("[ERROR] Error: SUPABASE_URL and SUPABASE_KEY must be set in .env file")
     sys.exit(1)
 
 # Paths
@@ -54,15 +54,15 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 # Initialize Supabase Client
 # ============================================
 
-print("🔗 Connecting to Supabase...")
+print("[LINK] Connecting to Supabase...")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-print("✅ Connected to Supabase\n")
+print("[OK] Connected to Supabase\n")
 
 # ============================================
 # Initialize Embedding Model
 # ============================================
 
-print(f"🤖 Loading embedding model: {EMBEDDING_MODEL}")
+print(f"[AI] Loading embedding model: {EMBEDDING_MODEL}")
 print("   (This may take a minute on first run - downloading model...)")
 
 embeddings = HuggingFaceEmbeddings(
@@ -71,7 +71,7 @@ embeddings = HuggingFaceEmbeddings(
     encode_kwargs={'normalize_embeddings': True}  # Normalize for cosine similarity
 )
 
-print("✅ Embedding model loaded\n")
+print("[OK] Embedding model loaded\n")
 
 # ============================================
 # Load Markdown Files
@@ -90,16 +90,16 @@ def load_markdown_files(data_dir: Path) -> List[Document]:
     documents = []
     
     if not data_dir.exists():
-        print(f"❌ Error: Data directory not found: {data_dir}")
+        print(f"[ERROR] Error: Data directory not found: {data_dir}")
         sys.exit(1)
     
     md_files = list(data_dir.glob("*.md"))
     
     if not md_files:
-        print(f"❌ Error: No .md files found in {data_dir}")
+        print(f"[ERROR] Error: No .md files found in {data_dir}")
         sys.exit(1)
     
-    print(f"📂 Found {len(md_files)} markdown files:")
+    print(f" Found {len(md_files)} markdown files:")
     
     for md_file in md_files:
         print(f"   - {md_file.name}")
@@ -120,9 +120,9 @@ def load_markdown_files(data_dir: Path) -> List[Document]:
             documents.append(doc)
             
         except Exception as e:
-            print(f"   ⚠️  Warning: Failed to load {md_file.name}: {e}")
+            print(f"     Warning: Failed to load {md_file.name}: {e}")
     
-    print(f"✅ Loaded {len(documents)} documents\n")
+    print(f"[OK] Loaded {len(documents)} documents\n")
     return documents
 
 # ============================================
@@ -139,7 +139,7 @@ def split_documents(documents: List[Document]) -> List[Document]:
     Returns:
         List of chunked Document objects
     """
-    print(f"✂️  Splitting documents (chunk_size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP})...")
+    print(f"  Splitting documents (chunk_size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP})...")
     
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
@@ -150,7 +150,7 @@ def split_documents(documents: List[Document]) -> List[Document]:
     
     chunks = text_splitter.split_documents(documents)
     
-    print(f"✅ Created {len(chunks)} chunks\n")
+    print(f"[OK] Created {len(chunks)} chunks\n")
     return chunks
 
 # ============================================
@@ -167,7 +167,7 @@ def generate_embeddings(chunks: List[Document]) -> List[Dict]:
     Returns:
         List of dictionaries ready for Supabase insertion
     """
-    print(f"🧠 Generating embeddings for {len(chunks)} chunks...")
+    print(f"[BRAIN] Generating embeddings for {len(chunks)} chunks...")
     print("   (This may take 2-3 minutes on CPU...)")
     
     start_time = time.time()
@@ -192,7 +192,7 @@ def generate_embeddings(chunks: List[Document]) -> List[Dict]:
             print(f"   Progress: {i}/{len(chunks)} chunks ({rate:.1f} chunks/sec)")
     
     elapsed = time.time() - start_time
-    print(f"✅ Generated {len(records)} embeddings in {elapsed:.1f} seconds\n")
+    print(f"[OK] Generated {len(records)} embeddings in {elapsed:.1f} seconds\n")
     
     return records
 
@@ -207,15 +207,15 @@ def upload_to_supabase(records: List[Dict]) -> None:
     Args:
         records: List of dictionaries with content, embedding, metadata
     """
-    print(f"☁️  Uploading {len(records)} records to Supabase...")
+    print(f"  Uploading {len(records)} records to Supabase...")
     
     # Clear existing data (optional - comment out if you want to append)
     print("   Clearing existing documents...")
     try:
         supabase.table("documents").delete().neq("id", 0).execute()
-        print("   ✅ Cleared existing documents")
+        print("   [OK] Cleared existing documents")
     except Exception as e:
-        print(f"   ⚠️  Warning: Could not clear existing documents: {e}")
+        print(f"     Warning: Could not clear existing documents: {e}")
     
     # Upload in batches (Supabase has limits on batch size)
     BATCH_SIZE = 100
@@ -229,11 +229,11 @@ def upload_to_supabase(records: List[Dict]) -> None:
             total_uploaded += len(batch)
             print(f"   Uploaded batch {i//BATCH_SIZE + 1}: {total_uploaded}/{len(records)} records")
         except Exception as e:
-            print(f"   ❌ Error uploading batch {i//BATCH_SIZE + 1}: {e}")
+            print(f"   [ERROR] Error uploading batch {i//BATCH_SIZE + 1}: {e}")
             print(f"   Batch data: {batch[0] if batch else 'empty'}")
             raise
     
-    print(f"✅ Successfully uploaded {total_uploaded} records to Supabase\n")
+    print(f"[OK] Successfully uploaded {total_uploaded} records to Supabase\n")
 
 # ============================================
 # Main Execution
@@ -242,7 +242,7 @@ def upload_to_supabase(records: List[Dict]) -> None:
 def main():
     """Main ingestion pipeline."""
     print("=" * 60)
-    print("🚀 SalesGPT Data Ingestion Pipeline")
+    print(" SalesGPT Data Ingestion Pipeline")
     print("=" * 60)
     print()
     
@@ -260,15 +260,15 @@ def main():
         upload_to_supabase(records)
         
         print("=" * 60)
-        print("✅ INGESTION COMPLETE!")
+        print("[OK] INGESTION COMPLETE!")
         print("=" * 60)
         print()
-        print("📊 Summary:")
+        print("[DATA] Summary:")
         print(f"   - Documents loaded: {len(documents)}")
         print(f"   - Chunks created: {len(chunks)}")
         print(f"   - Records uploaded: {len(records)}")
         print()
-        print("🔍 Next steps:")
+        print("[SEARCH] Next steps:")
         print("   1. Verify data in Supabase dashboard")
         print("   2. Test RAG queries")
         print("   3. Build the FastAPI backend")
@@ -277,7 +277,7 @@ def main():
     except Exception as e:
         print()
         print("=" * 60)
-        print("❌ INGESTION FAILED")
+        print("[ERROR] INGESTION FAILED")
         print("=" * 60)
         print(f"Error: {e}")
         print()

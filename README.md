@@ -24,8 +24,9 @@
 | **Frontend** | React + Vite + Tailwind CSS | Customer chat widget + Admin dashboard |
 | **Backend** | Python FastAPI | Async API server |
 | **Database** | Supabase (PostgreSQL + pgvector) | Relational data + vector embeddings |
-| **Chat Agent** | Groq (Llama-3-8B) | Fast RAG responses |
+| **Chat Agent** | Groq (Llama-3.3-70B) | Fast RAG responses |
 | **Judge Agent** | Groq (GPT-OSS-120B) | BANT scoring & reasoning |
+| **Email Draft** | Groq (Llama-3.1-8B) | Follow-up email generation |
 | **Embeddings** | HuggingFace (all-MiniLM-L6-v2) | Local, zero-cost vectorization |
 
 ### Dual-Track System
@@ -37,7 +38,7 @@ User Query
 │  FAST TRACK (Foreground)              │
 │  --------------------------------      │
 │  1. Retrieve relevant docs (RAG)      │
-│  2. Generate response (Llama-3-8B)    │
+│  2. Generate response (Llama-3.3-70B) │
 │  3. Return to user (<1.5s)            │
 └───────────────────────────────────────┘
     ↓
