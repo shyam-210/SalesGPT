@@ -219,9 +219,27 @@ FORMAT RULES:
   - Body: 2-4 short paragraphs (no filler, every sentence adds value)
   - End with a simple CTA: "Let me know if you have any questions."
   - Signature: "Best regards,\\nTeam Defaulters"
-  - Return ONLY valid JSON: {{"subject": "...", "body": "..."}}
-  - No markdown, no code fences, no extra text outside the JSON
 
-Generate the email now (JSON only):"""
+OUTPUT REQUIREMENTS - CRITICAL:
+  ✓ Return ONLY valid JSON object: {{"subject": "...", "body": "..."}}
+  ✓ Start with {{ and end with }} — ONLY these characters
+  ✓ Do NOT use triple backticks (```) — NEVER
+  ✓ Do NOT use triple backticks (```) even if this is a code block
+  ✓ Do NOT use markdown language specifiers like json, python, etc.
+  ✓ No prose before the JSON — start immediately with {{
+  ✓ No prose after the JSON — end immediately with }}
+  ✓ Escape newlines in body as \\n literal characters (not actual line breaks)
+  ✓ No extra text, comments, or markdown formatting
+
+WRONG EXAMPLES (DO NOT DO THIS):
+  ✗ ```json {{"subject": "...", "body": "..."}}```
+  ✗ ```{{"subject": "...", "body": "..."}}```
+  ✗ Here's the email: {{"subject": "...", "body": "..."}}
+  ✗ {{\"subject\": ... (do not escape quotes with backslash)
+
+CORRECT EXAMPLE:
+  {{"subject": "Your Pricing Summary", "body": "Hi John,\\n\\nThank you for your interest...\\n\\nBest regards,\\nTeam Defaulters"}}
+
+Generate the email now:"""
 
     return prompt

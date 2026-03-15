@@ -583,19 +583,35 @@ async def draft_email(request: DraftEmailRequest):
         
         # Parse JSON response (robust extraction via shared util)
         raw_content = response.content.strip()
+        logger.debug("LLM raw response (first 500 chars): %s", raw_content[:500])
+        
         email_data = extract_json(raw_content)
 
         if email_data is None:
+            logger.error("Failed to extract JSON from response. Raw content length: %d", len(raw_content))
+            logger.error("First 300 chars of response: %s", raw_content[:300])
             raise ValueError(f"LLM returned unparseable response: {raw_content[:200]}")
 
+        if not isinstance(email_data, dict):
+            logger.error("Parsed data is not a dict, got: %s", type(email_data))
+            raise ValueError(f"LLM response is not a valid JSON object")
+        
         if "subject" not in email_data or "body" not in email_data:
+            logger.error("Missing required keys in parsed JSON. Keys found: %s", list(email_data.keys()))
             raise ValueError(f"LLM JSON missing required keys: {list(email_data.keys())}")
         
-        logger.info("Email generated: %s", email_data["subject"])
+        subject = email_data.get("subject", "").strip()
+        body = email_data.get("body", "").strip()
+        
+        if not subject or not body:
+            logger.error("Subject or body is empty. Subject length: %d, Body length: %d", len(subject), len(body))
+            raise ValueError("LLM generated empty subject or body")
+        
+        logger.info("Email generated successfully: %s", subject[:50])
         
         return DraftEmailResponse(
-            subject=email_data['subject'],
-            body=email_data['body']
+            subject=subject,
+            body=body
         )
         
     except ValueError as e:
