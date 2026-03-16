@@ -256,7 +256,7 @@ supabase.channel('leads-changes')
 
 ### 3.2 Backend API Architecture
 
-#### 3.2.1 FastAPI Server (`main.py`)
+#### 3.2.1 FastAPI Server (`main.py`) - Complete Endpoints
 
 **Core Configuration:**
 
@@ -280,6 +280,26 @@ embeddings = HuggingFaceEmbeddings(
 
 supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ```
+
+**Complete API Endpoints (16 Total):**
+
+| Endpoint | Method | Purpose | New? |
+|----------|--------|---------|------|
+| `/` | GET | Health check / landing | - |
+| `/health` | GET | Detailed health status | - |
+| `/chat` | POST | Dual-track chat with RAG | - |
+| `/leads` | GET | List all leads | - |
+| `/leads/search` | POST | Advanced lead search | ✅ NEW |
+| `/leads/{session_id}` | DELETE | Delete lead | - |
+| `/leads/{session_id}` | PATCH | Update lead status | ✅ NEW |
+| `/analytics/dashboard` | GET | Comprehensive metrics | ✅ NEW |
+| `/analytics/activity` | GET | Activity feed (50 recent) | ✅ NEW |
+| `/conversations/{session_id}` | GET | Get chat history | - |
+| `/draft_email` | POST | Generate email | ✅ ENHANCED |
+| `/documents` | GET | List KB documents | ✅ NEW |
+| `/documents/upload` | POST | Upload .md file | ✅ NEW |
+| `/documents/{source}` | DELETE | Remove document | ✅ NEW |
+| `/admin/force_decay` | POST | Trigger time-decay | - |
 
 **Lifespan Management:**
 - Application startup: Initialize models, verify Supabase connectivity, log configuration
@@ -423,16 +443,148 @@ result = supabase_client.rpc(
 - Chunked with 500-char overlap for semantic coherence
 - Metadata includes source filename for attribution
 
-#### 3.2.4 Analytics Endpoint (`GET /analytics/dashboard`)
+#### 3.2.4 Dynamic RAG System - Document Management
 
-**Computed Metrics:**
+**Purpose:** Allow admins to upload/delete markdown files without redeploying backend
+
+**Three-Endpoint System:**
+
+**Endpoint 1: List Documents**
+
+```
+GET /documents
+
+Response:
+{
+  "documents": [
+    {"source": "Pricing_Strategy_2026.md", "chunk_count": 12},
+    {"source": "Product_Nebula_Compute.md", "chunk_count": 18},
+    ...
+  ],
+  "total_chunks": 152
+}
+```
+
+**Endpoint 2: Upload Document**
+
+```
+POST /documents/upload
+Content-Type: multipart/form-data
+
+Form Data:
+- file: [binary .md file]
+
+Response:
+{
+  "success": true,
+  "source": "Pricing_Strategy_2026.md",
+  "chunks_created": 12
+}
+
+Workflow:
+1. Receive .md file upload
+2. Validate UTF-8 encoding
+3. Delete any existing chunks from same source (idempotent)
+4. Split text into 500-char chunks (50-char overlap)
+5. Generate embedding for each chunk via HuggingFace
+6. Batch insert (100 at a time) into pgvector database
+7. Document immediately available to RAG chat
+8. No backend restart needed!
+```
+
+**Endpoint 3: Delete Document**
+
+```
+DELETE /documents/{source}
+
+Example: DELETE /documents/Pricing_Strategy_2026.md
+
+Response:
+{
+  "success": true,
+  "source": "Pricing_Strategy_2026.md",
+  "chunks_deleted": 12
+}
+
+Workflow:
+1. Find all chunks where metadata.source == source
+2. Delete in batches of 100
+3. Document no longer used in RAG retrieval
+4. Instant effect on next chat message
+```
+
+**Dynamic RAG Implementation Details:**
 
 ```python
+@app.post("/documents/upload")
+async def upload_document(file: UploadFile = File(...)):
+    """Upload a .md file with instant vector embedding"""
+    
+    # 1. Validate file
+    if not file.filename.endswith(".md"):
+        raise HTTPException(status_code=400, detail="Only .md supported")
+    
+    raw = await file.read()
+    content = raw.decode("utf-8")  # Validate UTF-8
+    source_name = file.filename
+    
+    # 2. Remove existing chunks  (idempotent)
+    existing = supabase_client.table("documents").select("id,metadata").execute()
+    ids_to_delete = [
+        r["id"] for r in (existing.data or [])
+        if (r.get("metadata") or {}).get("source") == source_name
+    ]
+    if ids_to_delete:
+        for i in range(0, len(ids_to_delete), 100):
+            batch = ids_to_delete[i:i + 100]
+            supabase_client.table("documents").delete().in_("id", batch).execute()
+    
+    # 3. Chunk the document
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    chunks = splitter.split_text(content)
+    
+    # 4. Generate embeddings + prepare records
+    records = []
+    for chunk_text in chunks:
+        embedding = embeddings.embed_query(chunk_text)
+        records.append({
+            "content": chunk_text,
+            "embedding": embedding,
+            "metadata": {"source": source_name, "filename": source_name.replace(".md", "")},
+        })
+    
+    # 5. Batch upload to Supabase
+    BATCH_SIZE = 100
+    for i in range(0, len(records), BATCH_SIZE):
+        supabase_client.table("documents").insert(records[i:i + BATCH_SIZE]).execute()
+    
+    logger.info(f"Uploaded {len(records)} chunks for {source_name}")
+    return {"success": True, "source": source_name, "chunks_created": len(records)}
+```
+
+**Key Feature: Zero Downtime**
+- No need to restart backend
+- Chat immediately uses new documents
+- Deletion is instant across all sessions
+- pgvector automatically searches updated index
+
+#### 3.2.5 Advanced Analytics System (NEW)
+
+**Endpoint 1: Analytics Dashboard (`GET /analytics/dashboard`)**
+
+**Response Model:**
+
+```json
 {
   "total_leads": 847,
   "average_score": 42.3,
   "email_capture_rate": 67.4,
   "company_capture_rate": 54.2,
+  
   "pipeline_funnel": {
     "Visitor": 520,
     "Engaged": 180,
@@ -440,6 +592,7 @@ result = supabase_client.rpc(
     "Hot Lead": 42,
     "Approached": 7
   },
+  
   "score_distribution": {
     "0-20": 254,
     "21-40": 312,
@@ -447,23 +600,169 @@ result = supabase_client.rpc(
     "61-80": 76,
     "81-100": 18
   },
+  
   "conversion_rates": {
     "visitor_to_engaged": 34.6,
     "engaged_to_qualified": 54.4,
     "qualified_to_approached": 7.1,
     "overall_conversion": 0.83
   },
+  
   "hot_leads": [
     {
-      "session_id": "...",
+      "session_id": "session_...",
       "name": "John Smith",
-      "company": "TechCorp",
+      "company": "TechCorp Inc",
       "score": 89,
       "stage": "Qualified",
       "email": "john@techcorp.com"
     }
+  ]  // Top 10 highest-scoring leads
+}
+```
+
+**Implementation:**
+
+```python
+@app.get("/analytics/dashboard")
+async def analytics_dashboard():
+    """Comprehensive analytics with funnel, distribution, conversion rates, hot leads"""
+    
+    # 1. Fetch all leads
+    result = supabase_client.table("leads").select("*").execute()
+    leads = result.data or []
+    
+    # 2. Calculate pipeline funnel
+    stages = ["Visitor", "Engaged", "Qualified", "Hot Lead", "Approached"]
+    funnel = {s: 0 for s in stages}
+    score_buckets = {"0-20": 0, "21-40": 0, "41-60": 0, "61-80": 0, "81-100": 0}
+    
+    total_score = 0
+    with_email = 0
+    with_company = 0
+    hot_leads = []
+    
+    for lead in leads:
+        stage = lead.get("pipeline_status", "Visitor")
+        score = lead.get("lead_score", 0)
+        
+        # Count by stage
+        funnel[stage] = funnel.get(stage, 0) + 1
+        
+        # Count by score bucket
+        total_score += score
+        if score <= 20: score_buckets["0-20"] += 1
+        elif score <= 40: score_buckets["21-40"] += 1
+        elif score <= 60: score_buckets["41-60"] += 1
+        elif score <= 80: score_buckets["61-80"] += 1
+        else: score_buckets["81-100"] += 1
+        
+        # Capture rates
+        if lead.get("email"): with_email += 1
+        if lead.get("company"): with_company += 1
+        
+        # Hot leads (score >= 70)
+        if score >= 70:
+            hot_leads.append({
+                "session_id": lead["session_id"],
+                "name": lead.get("name", "Anonymous"),
+                "company": lead.get("company", "Unknown"),
+                "score": score,
+                "stage": stage,
+                "email": lead.get("email"),
+            })
+    
+    # 3. Calculate conversion rates
+    total = len(leads)
+    avg_score = round(total_score / total, 1) if total else 0
+    
+    engaged_plus = sum(funnel.get(s, 0) for s in ["Engaged", "Qualified", "Hot Lead", "Approached"])
+    qualified_plus = sum(funnel.get(s, 0) for s in ["Qualified", "Hot Lead", "Approached"])
+    approached = funnel.get("Approached", 0)
+    
+    conversion_rates = {
+        "visitor_to_engaged": round(engaged_plus / total * 100, 1) if total else 0,
+        "engaged_to_qualified": round(qualified_plus / engaged_plus * 100, 1) if engaged_plus else 0,
+        "qualified_to_approached": round(approached / qualified_plus * 100, 1) if qualified_plus else 0,
+        "overall_conversion": round(approached / total * 100, 1) if total else 0,
+    }
+    
+    return {
+        "total_leads": total,
+        "average_score": avg_score,
+        "email_capture_rate": round(with_email / total * 100, 1) if total else 0,
+        "company_capture_rate": round(with_company / total * 100, 1) if total else 0,
+        "pipeline_funnel": funnel,
+        "score_distribution": score_buckets,
+        "conversion_rates": conversion_rates,
+        "hot_leads": sorted(hot_leads, key=lambda x: x["score"], reverse=True)[:10],
+    }
+```
+
+**Endpoint 2: Activity Feed (`GET /analytics/activity`)**
+
+**Response:**
+
+```json
+{
+  "activities": [
+    {
+      "session_id": "session_...",
+      "name": "John Smith",
+      "company": "TechCorp Inc",
+      "lead_score": 78,
+      "pipeline_status": "Qualified",
+      "email": "john@techcorp.com",
+      "updated_at": "2025-02-28T14:32:45Z"
+    },
+    ...
   ]
 }
+```
+
+**Implementation:**
+
+```python
+@app.get("/analytics/activity")
+async def analytics_activity():
+    """Recent activity feed — last 50 lead updates for timeline"""
+    result = (
+        supabase_client.table("leads")
+        .select("session_id,name,company,lead_score,pipeline_status,updated_at,email")
+        .order("updated_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+    return {"activities": result.data or []}
+```
+
+**Frontend Analytics Features:**
+
+```javascript
+// Metric Cards (4 KPIs)
+- Total Leads
+- Average Lead Score
+- Email Capture Rate
+- Overall Conversion Rate
+
+// Pipeline Funnel Chart
+- Bar chart showing progression through 5 stages
+- Visitor → Engaged → Qualified → Hot Lead → Approached
+
+// Score Distribution Histogram
+- 5 buckets: 0-20, 21-40, 41-60, 61-80, 81-100
+- Shows concentration of lead quality
+
+// Conversion Rate Metrics
+- Visitor → Engaged: %
+- Engaged → Qualified: %
+- Qualified → Approached: %
+- Overall: from start to close
+
+// Top Hot Leads List
+- Top 10 leads with score >= 70
+- Shows name, company, email, score
+- Sorted highest to lowest
 ```
 
 #### 3.2.5 Search Endpoint (`POST /leads/search`)
@@ -635,7 +934,7 @@ Then:
 # Result: Gradual enrichment without losing previous values
 ```
 
-### 3.5 Email Intent Analysis
+### 3.5 Email Intent Analysis and Draft Generation
 
 **Intent Categories:**
 
@@ -663,6 +962,421 @@ email_context = "G1.xlarge: 16 vCPUs, 32GB RAM, NVIDIA A100 GPU, 200GB SSD stora
 # For startup_program:
 email_context = "Startup Program: $5,000 credits, 12 months professional support, 
                   access to startup community. Eligible: unfunded or Series A only"
+```
+
+**Email Draft Generation Implementation (`email_intent_prompts.py`):**
+
+```python
+"""
+Email intent analysis and draft generation.
+Called by the Judge agent to create context-aware follow-up emails.
+"""
+
+from langchain_groq import ChatGroq
+from langchain_core.messages import SystemMessage, HumanMessage
+
+email_model = ChatGroq(
+    model_name="llama-3.1-8b-instant",
+    temperature=0.3,  # Low temperature for professional tone
+    max_tokens=1024
+)
+
+def build_email_prompt(lead_name: str, lead_company: str, email_intent: str, email_context: str) -> str:
+    """Build a detailed prompt for email generation"""
+    
+    return f"""You are a professional sales email writer for Team Defaulters cloud infrastructure.
+
+Write a PERSONALIZED follow-up email based on the customer's specific needs.
+
+**Recipient:**
+- Name: {lead_name or "Valued Customer"}
+- Company: {lead_company or "Your Company"}
+
+**Intent:** {email_intent}
+(Tells you what the customer is most interested in)
+
+**Context from Conversation:**
+{email_context}
+
+**Email Requirements:**
+1. Subject line (max 60 chars) - specific and benefit-focused
+2. Opening: Brief, personal greeting
+3. Body: Address their SPECIFIC needs mentioned in context
+4. Include 2-3 relevant metrics/numbers from context
+5. Call to action: Next steps (demo, call, trial, etc.)
+6. Closing: Professional sign-off
+
+**Tone:**
+- Helpful and friendly (not pushy)
+- Expert (show technical knowledge)
+- Concise (250-350 words total)
+- No corporate jargon
+- Avoid "I've sent" or "I'm sending" - use "Our team will send you..."
+
+**Format:**
+```
+SUBJECT: [subject line]
+
+[Body text with paragraph breaks]
+
+[CTA paragraph]
+
+Best regards,
+[Your Name]
+Team Defaulters Sales
+[phone]
+[email]
+```
+
+Now write the email:"""
+
+
+async def generate_email_draft(session_id: str, email_intent: str, email_context: str):
+    """
+    Generate a personalized email draft based on intent and context.
+    
+    Args:
+        session_id: lead identifier
+        email_intent: category (pricing_request, technical_specs, etc.)
+        email_context: specific details from conversation
+    
+    Returns:
+        {"subject": "...", "body": "..."}
+    """
+    
+    # Fetch lead info
+    try:
+        lead_response = supabase_client.table("leads") \
+            .select("name, company, email") \
+            .eq("session_id", session_id) \
+            .single() \
+            .execute()
+        
+        lead = lead_response.data
+        lead_name = lead.get("name", "Valued Customer")
+        lead_company = lead.get("company", "Your Company")
+    except:
+        lead_name = "Valued Customer"
+        lead_company = "Your Company"
+    
+    # Build email prompt
+    prompt = build_email_prompt(lead_name, lead_company, email_intent, email_context)
+    
+    # Generate email via LLM
+    try:
+        messages = [
+            SystemMessage(content="You are an expert email writer."),
+            HumanMessage(content=prompt)
+        ]
+        
+        response = email_model.invoke(messages)
+        email_text = response.content
+        
+        # Parse subject and body
+        lines = email_text.split("\n")
+        subject = ""
+        body = ""
+        
+        parsing_subject = False
+        parsing_body = False
+        
+        for line in lines:
+            if "SUBJECT:" in line:
+                subject = line.replace("SUBJECT:", "").strip()
+                parsing_subject = True
+            elif parsing_subject and line.strip() == "":
+                parsing_subject = False
+                parsing_body = True
+            elif parsing_body:
+                body += line + "\n"
+        
+        return {
+            "subject": subject or "Regarding Your Inquiry - Team Defaulters",
+            "body": body.strip()
+        }
+    
+    except Exception as e:
+        logger.error(f"Email generation failed: {e}")
+        return {
+            "subject": "Let's discuss your infrastructure needs",
+            "body": f"Hi {lead_name},\n\nThank you for your interest in Team Defaulters. Our team would like to discuss how we can help you achieve your cloud infrastructure goals.\n\nPlease let us know your availability for a brief discussion.\n\nBest regards,\nTeam Defaulters Sales"
+        }
+```
+
+**Email Draft Endpoint (`POST /draft_email`) - Enhanced with Intent-Based Generation:**
+
+```python
+@app.post("/draft_email", response_model=DraftEmailResponse)
+async def draft_email(request: DraftEmailRequest):
+    """
+    Generate a personalized follow-up email using BANT analysis + intent + conversation.
+    
+    Process:
+    1. Fetch lead with BANT score, email_intent, email_context
+    2. Fetch conversation history
+    3. Build prompt with:
+       - Lead profile (name, company, role, score, stage, needs)
+       - Email intent directive (focus, must-include, structure)
+       - Tone derived from BANT score
+       - Conversation as source of truth
+    4. Call llama-3.1-8b-instant with temp=0.3
+    5. Parse JSON response (subject + body)
+    6. Return to frontend for email modal
+    """
+    
+    logger.info("Drafting email for session: %s", request.session_id)
+    
+    # 1. Fetch lead
+    lead_result = supabase_client.table("leads") \
+        .select("*") \
+        .eq("session_id", request.session_id) \
+        .execute()
+    
+    if not lead_result.data:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    lead = lead_result.data[0]
+    
+    # 2. Fetch conversation history
+    conv_result = supabase_client.table("conversations") \
+        .select("*") \
+        .eq("session_id", request.session_id) \
+        .order("created_at") \
+        .execute()
+    
+    # Format conversation
+    conversation_text = ""
+    if conv_result.data:
+        for msg in conv_result.data:
+            role = "Customer" if msg['role'] == 'user' else "Assistant"
+            conversation_text += f"{role}: {msg['message']}\n"
+    else:
+        conversation_text = "No conversation history available."
+    
+    # 3. Extract intent and context from BANT analysis
+    email_intent = lead.get('email_intent', 'general_followup')
+    email_context = lead.get('email_context', '')
+    
+    # 4. Build sophisticated email prompt
+    email_prompt = build_email_prompt(lead, conversation_text, email_intent, email_context)
+    
+    # 5. Call llama-3.1-8b-instant for email generation
+    logger.info("Calling email model with intent=%s, score=%s", email_intent, lead.get('lead_score'))
+    response = email_model.invoke([SystemMessage(content=email_prompt)])
+    
+    # 6. Parse JSON with robust extraction
+    raw_content = response.content.strip()
+    email_data = extract_json(raw_content)
+    
+    if not email_data or "subject" not in email_data or "body" not in email_data:
+        logger.error("Failed to parse email JSON. Raw: %s", raw_content[:200])
+        raise ValueError("Failed to generate valid email JSON")
+    
+    logger.info("Email generated: %s", email_data.get("subject", "")[:50])
+    
+    return DraftEmailResponse(
+        subject=email_data["subject"].strip(),
+        body=email_data["body"].strip()
+    )
+```
+
+**Intent-Directed Email System (`email_intent_prompts.py`):**
+
+```python
+# INTENT_DIRECTIVES - Template for each intent category
+INTENT_DIRECTIVES = {
+    "pricing_request": {
+        "focus": "Pricing details customer asked about",
+        "must_include": [
+            "Exact pricing numbers discussed (monthly/annual)",
+            "Instance types and costs",
+            "Discounts/credits (startup credits: $5,000)",
+            "Tier/plan names referenced",
+            "Annual cost estimates"
+        ],
+        "structure": (
+            "1. Greeting referencing their pricing inquiry\n"
+            "2. Pricing summary (EXACT numbers from conversation)\n"
+            "3. Applicable discounts/savings\n"
+            "4. CTA (brief & action-oriented)"
+        ),
+    },
+    
+    "technical_specs": {
+        "focus": "Technical specifications they requested",
+        "must_include": [
+            "Instance types (vCPUs, RAM, storage, GPU)",
+            "GPU model (e.g., NVIDIA A100, Tesla V100)",
+            "Performance metrics discussed",
+            "Relevant SLA/uptime mentioned",
+            "Architecture recommendations given",
+        ],
+        "structure": (
+            "1. Greeting referencing their tech inquiry\n"
+            "2. Specs breakdown (EXACT numbers)\n"
+            "3. How specs map to their use case\n"
+            "4. CTA (demo, trial, technical call)"
+        ),
+    },
+    
+    "plan_comparison": {
+        "focus": "Plan or tier comparison they requested",
+        "must_include": [
+            "Each plan discussed with key differences",
+            "Pricing for each option",
+            "Feature differences",
+            "Recommendation from assistant",
+            "Use case alignment for each plan",
+        ],
+        "structure": (
+            "1. Greeting referencing their comparison request\n"
+           "2. Side-by-side summary of options\n"
+            "3. Recommendation based on their needs\n"
+            "4. CTA (choose plan, schedule demo)"
+        ),
+    },
+    
+    "startup_program": {
+        "focus": "Startup program details they asked about",
+        "must_include": [
+            "Credit amount ($5,000)",
+            "Program duration and benefits",
+            "Eligibility criteria",
+            "How to apply",
+            "Support included (professional support, community)",
+        ],
+        "structure": (
+            "1. Greeting for startup program interest\n"
+            "2. Program benefits (EXACT details from chat)\n"
+            "3. Eligibility & next steps\n"
+            "4. Application link/process"
+        ),
+    },
+    
+    "custom_solution": {
+        "focus": "Custom architecture discussed",
+        "must_include": [
+            "Specific use case they described",
+            "Solution components recommended",
+            "Estimated costs (if discussed)",
+            "Implementation timeline (if mentioned)",
+            "Architecture diagram or description",
+        ],
+        "structure": (
+            "1. Greeting for custom solution\n"
+            "2. Proposed architecture summary\n"
+            "3. Timeline & costs (if discussed)\n"
+            "4. Next step (call, proposal, trial)"
+        ),
+    },
+    
+    "general_followup": {
+        "focus": "General interest follow-up",
+        "must_include": [
+            "Key topics discussed",
+            "Specific questions they had",
+            "Relevant company solutions",
+            "Next logical step",
+        ],
+        "structure": (
+            "1. Greeting referencing conversation\n"
+            "2. Summary of discussion\n"
+            "3. Offer to help further\n"
+            "4. Soft CTA"
+        ),
+    },
+}
+
+def _get_tone_from_bant(score: int, stage: str = "") -> str:
+    """Derive email tone from BANT score"""
+    if score >= 71:
+        return (
+            "Warm and action-oriented. This is a HOT LEAD with budget, "
+            "authority, need, AND urgency. Be direct, reference their specific "
+            "requirements, and propose a clear next step."
+        )
+    if score >= 51:
+        return (
+            "Professional and consultative. This is a QUALIFIED lead with "
+            "clear need. Reinforce the value, include specific details they "
+            "asked for, and suggest a follow-up."
+        )
+    if score >= 31:
+        return (
+            "Friendly and informative. This lead is ENGAGED but still "
+            "exploring. Provide clear information and invite further questions."
+        )
+    return (
+        "Light and helpful. This is an early-stage VISITOR. Keep it short, "
+        "summarize discussion, and leave the door open."
+    )
+
+def build_email_prompt(lead: dict, conversation: str, intent: str, context: str) -> str:
+    """
+    Build email generation prompt using:
+    - Lead profile (BANT data)
+    - Email intent directive (focus, must-include, structure)
+    - Tone derived from BANT score
+    - Conversation as single source of truth
+    """
+    
+    name = lead.get("name") or "there"
+    company = lead.get("company", "")
+    role = lead.get("role", "")
+    score = lead.get("lead_score", 0)
+    stage = lead.get("pipeline_status", "Visitor")
+    needs = lead.get("needs", "")
+    
+    directive = INTENT_DIRECTIVES.get(intent, INTENT_DIRECTIVES["general_followup"])
+    tone = _get_tone_from_bant(score, stage)
+    
+    must_include_list = "\n".join(f"  - {item}" for item in directive["must_include"])
+    
+    prompt = f"""You are a B2B Sales Representative for Team Defaulters.
+Your task: write a follow-up email that is 100% grounded in the conversation.
+
+=== LEAD PROFILE ===
+Name: {name}
+Company: {company}
+Role: {role}
+Lead Score: {score}/100  |  Stage: {stage}
+Needs: {needs}
+
+=== EMAIL INTENT ===
+Category: {intent}
+Focus: {directive["focus"]}
+Key Facts: {context if context else "See conversation below"}
+
+=== CONVERSATION (SOURCE OF TRUTH) ===
+{conversation}
+
+=== GENERATION RULES ===
+
+ACCURACY FIRST:
+  1. Every number, price, spec, discount, credit MUST appear in conversation
+  2. Do NOT invent details not discussed
+  3. Omit rather than guess
+
+WHAT TO INCLUDE:
+{must_include_list}
+
+EMAIL STRUCTURE:
+{directive["structure"]}
+
+TONE:
+{tone}
+
+FORMAT (CRITICAL):
+  ✓ Return ONLY valid JSON: {{"subject": "...", "body": "..."}}
+  ✓ NO triple backticks or markdown
+  ✓ "body" uses \\n for line breaks (literal backslash-n)
+  ✓ Every sentence must come from above conversation
+  ✓ No external references or inventions
+  ✓ Address customer as "{name}"
+
+Generate the email now:"""
+    
+    return prompt
 ```
 
 ### 3.6 Time-Decay Algorithm (`cron.py`)
@@ -704,6 +1418,247 @@ Day 10: Score = 29 (Visitor)  [~31 * 0.9 → 29 < 31, downgrade]
 **Excluded Stages:**
 - Hot Lead: Preserved for manual review (may legitimately be cold)
 - Approached: Preserved (sales team handling)
+
+### 3.7 Analytics & Reporting System
+
+**Analytics Dashboard Endpoint (`GET /analytics/dashboard`):**
+
+Comprehensive real-time pipeline health metrics:
+
+- **Funnel Analysis:** Count of leads per stage (Visitor → Engaged → Qualified → Hot Lead → Approached)
+- **Score Distribution:** Histogram of lead scores by 20-point buckets (0-20, 21-40, etc.)
+- **Conversion Rates:** Stage-to-stage transition rates (e.g., Qualified→Hot: 53%)
+- **Hot Leads:** All leads with score ≥ 71 (top 10 sorted by score)
+- **Statistics:** Total lead count, average score, email capture %, average leads per stage
+
+**Example Response:**
+```json
+{
+  "funnel": {
+    "Visitor": 156,
+    "Engaged": 89,
+    "Qualified": 34,
+    "Hot Lead": 18,
+    "Approached": 12
+  },
+  "conversion_rates": {
+    "Visitor→Engaged": 0.57,
+    "Engaged→Qualified": 0.38,
+    "Qualified→Hot Lead": 0.53,
+    "Hot Lead→Approached": 0.67
+  },
+  "hot_leads": [
+    {
+      "name": "Alice Chen",
+      "company": "TechCorp",
+      "score": 89,
+      "email": "alice@techcorp.com"
+    }
+  ],
+  "statistics": {
+    "total_leads": 309,
+    "avg_score": 42.5,
+    "email_capture_rate": 0.34
+  }
+}
+```
+
+**Lead Search Endpoint (`POST /leads/search`):**
+
+Advanced filtering with full-text search, stage/score ranges, sorting, and pagination:
+
+```
+Request:
+{
+  "query": "alice techcorp",     // Optional: text search
+  "stage": "Hot Lead",            // Optional: exact stage
+  "min_score": 70,                // Optional: score >= N
+  "max_score": 100,               // Optional: score <= N
+  "sort_by": "score",             // "score" | "name" | "company"
+  "sort_order": "desc",           // "asc" | "desc"
+  "limit": 20,
+  "offset": 0
+}
+
+Response:
+{
+  "leads": [...],
+  "total_count": 243,
+  "returned_count": 20
+}
+```
+
+**Activity Feed Endpoint (`GET /analytics/activity`):**
+
+Chronological log of lead changes (last 50):
+
+```
+GET /analytics/activity?limit=50
+
+Response:
+{
+  "activity": [
+    {
+      "name": "Alice Chen",
+      "company": "TechCorp",
+      "stage": "Hot Lead",
+      "score": 89,
+      "timestamp": "2024-01-15T14:32:00Z"
+    },
+    ...
+  ],
+  "count": 50
+}
+```
+
+### 3.8 Dynamic RAG System - Document Management
+
+**Core Concept:** Upload/delete markdown files on-the-fly without restarting backend
+
+**Document Upload Endpoint (`POST /documents/upload`):**
+
+```
+Request: multipart/form-data with single .md file
+Response:
+{
+  "filename": "Pricing_Strategy_2026.md",
+  "chunks_created": 5,
+  "status": "success"
+}
+
+Process:
+1. Validate UTF-8 encoding
+2. Delete existing chunks for source (idempotent)
+3. Split into chunks (RecursiveCharacterTextSplitter: 500 size, 50 overlap)
+4. Generate embedding per chunk via HuggingFace (local 384-dim model)
+5. Batch upload to pgvector (100 at a time)
+6. Document immediately available to RAG chat
+```
+
+**Configuration:**
+```
+CHUNK_SIZE = 500          # Characters per chunk
+CHUNK_OVERLAP = 50        # Overlapping characters between chunks
+BATCH_SIZE = 100          # Embeddings uploaded per batch
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+```
+
+**Document Delete Endpoint (`DELETE /documents/{source}`):**
+
+```
+Request:
+DELETE /documents/Pricing_Strategy_2026.md
+
+Response:
+{
+  "source": "Pricing_Strategy_2026.md",
+  "chunks_deleted": 5,
+  "status": "success"
+}
+
+Process:
+1. Find all chunks where metadata.source == source
+2. Delete in batches of 100
+3. Instant effect on next chat (no restart required)
+```
+
+**List Documents Endpoint (`GET /documents`):**
+
+```
+Response:
+{
+  "documents": [
+    {
+      "source": "Pricing_Strategy_2026.md",
+      "chunk_count": 5
+    },
+    {
+      "source": "Product_Nebula_Compute.md",
+      "chunk_count": 8
+    }
+  ],
+  "total_chunks": 13
+}
+```
+
+**Knowledge Base Management UI (Dashboard.jsx):**
+
+Admin "Knowledge Base" tab with:
+- **Upload Panel:** File selector (`.md` only), drag-drop support
+- **Document List:** Name + chunk count for each document
+- **Delete Buttons:** Per-document deletion with confirmation
+- **Toast Notifications:** Success/error state feedback
+- **Info Box:** Explains chunking + embedding process
+
+**API Implementation Details:**
+
+```python
+# Chunk creation
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,
+    chunk_overlap=50,
+    separators=["\n\n", "\n", " ", ""]
+)
+chunks = splitter.split_text(markdown_content)
+
+# Embedding generation
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
+for chunk in chunks:
+    embedding = embeddings.embed_query(chunk)  # 384-dim vector
+
+# Database storage
+records = [
+    {
+        "content": chunk_text,
+        "embedding": embedding_vector,
+        "metadata": {
+            "source": "filename.md",
+            "uploaded_at": "2024-01-15T14:32:00Z"
+        }
+    }
+    for chunk_text, embedding_vector in zip(chunks, embeddings)
+]
+
+# Batch upload to Supabase
+for batch in chunks_of(records, 100):
+    supabase.table("documents").insert(batch).execute()
+```
+
+**Lead Status Update Endpoint (`PATCH /leads/{session_id}`):**
+
+Manual lead updates triggered by admin actions:
+
+```
+Request:
+{
+  "stage": "Approached",      // Optional: new stage
+  "score_adjustment": -10     // Optional: delta (not absolute)
+}
+
+Response:
+{
+  "session_id": "uuid",
+  "new_stage": "Approached",
+  "new_score": 75,
+  "updated_at": "2024-01-15T14:32:00Z"
+}
+```
+
+**Admin Force Decay Endpoint (`POST /admin/force_decay`):**
+
+Manually trigger time-decay algorithm:
+
+```
+POST /admin/force_decay
+
+Response:
+{
+  "status": "success",
+  "message": "Time-decay algorithm executed"
+}
+```
 
 ---
 
@@ -1000,7 +1955,7 @@ ChatGroq(
 
 ## 6. API Specification and Request/Response Contracts
 
-### 6.1 Chat Endpoint
+### 6.1 Chat Endpoint - Complete Implementation
 
 **Endpoint:** `POST /chat`
 
@@ -1035,6 +1990,248 @@ ChatGroq(
 ```
 
 **Latency SLA:** <1.5 seconds (p95)
+
+**Detailed Implementation:**
+
+```python
+@app.post("/chat")
+async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
+    """
+    Main chat endpoint - Fast track with async background processing
+    
+    Flow:
+    1. Validate input
+    2. Load session state & conversation history
+    3. Build system prompt with RAG context
+    4. Generate response via LLM
+    5. Queue background tasks: persist, analyze, extract
+    6. Return response immediately
+    """
+    
+    # Step 1: Input validation
+    if not request.message or not request.session_id:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+    
+    session_id = request.session_id
+    user_message = request.message.strip()
+    
+    logger.info(f"Chat request from session: {session_id[:20]}...")
+    
+    # Step 2: Load/create session
+    chat_session = chat_sessions.get(session_id, {
+        "created_at": datetime.now(timezone.utc),
+        "messages": []
+    })
+    
+    # Step 3: Fetch conversation history from Supabase
+    try:
+        history_response = supabase_client.table("conversations") \
+            .select("*") \
+            .eq("session_id", session_id) \
+            .order("created_at", desc=False) \
+            .limit(10) \
+            .execute()
+        
+        chat_history = history_response.data or []
+    except Exception as e:
+        logger.warning(f"Failed to load history: {e}")
+        chat_history = []
+    
+    # Step 4: Load existing lead data
+    try:
+        lead_response = supabase_client.table("leads") \
+            .select("*") \
+            .eq("session_id", session_id) \
+            .single() \
+            .execute()
+        
+        lead = lead_response.data
+    except:
+        lead = None
+    
+    # Step 5: Embed user message for RAG
+    try:
+        query_embedding = embeddings.embed_query(user_message)
+    except Exception as e:
+        logger.error(f"Embedding failed: {e}")
+        return ChatResponse(
+            response="Sorry, I'm having trouble processing your request. Please try again.",
+            sources=[]
+        )
+    
+    # Step 6: Semantic search via pgvector
+    try:
+        search_results = supabase_client.rpc(
+            "match_documents",
+            {
+                "query_embedding": query_embedding,
+                "match_count": TOP_K_RESULTS
+            }
+        ).execute()
+        
+        documents = search_results.data or []
+    except Exception as e:
+        logger.warning(f"Vector search failed: {e}")
+        documents = []
+    
+    # Step 7: Format context
+    rag_context = ""
+    sources = []
+    
+    for doc in documents:
+        rag_context += f"\n\n[Source: {doc['metadata'].get('filename', 'Unknown')}]\n{doc['content']}"
+        sources.append(doc['metadata'].get('filename', 'Unknown'))
+    
+    # Step 8: Build system prompt
+    known_info = ""
+    if lead:
+        known_info = f"""
+Known Information About This Lead:
+- Name: {lead.get('name', 'Unknown')}
+- Company: {lead.get('company', 'Unknown')}
+- Role: {lead.get('role', 'Unknown')}
+- Current Stage: {lead.get('pipeline_status', 'Visitor')}
+- Previous Score: {lead.get('lead_score', 0)}
+"""
+    
+    chat_history_text = "\n".join([
+        f"{msg['role'].capitalize()}: {msg.get('message', msg.get('text', ''))}"
+        for msg in chat_history[-5:]  # Last 5 messages
+    ])
+    
+    system_prompt = f"""You are a cloud infrastructure expert at Team Defaulters.
+
+YOUR MISSION: Help users solve their cloud infrastructure problems with expert advice and insights.
+
+{known_info}
+
+Recent Conversation:
+{chat_history_text or "(New conversation)"}
+
+Knowledge Base:
+{rag_context}
+
+CORE PRINCIPLE: HELP FIRST, QUALIFY LAST
+
+1. You are an EXPERT FIRST, a salesperson second
+2. Answer questions with specific, actionable details
+3. Use the knowledge base to provide real specs, pricing, features
+4. Show your deep expertise and build trust
+5. Only collect contact info when the conversation naturally leads there
+
+ANTI-HALLUCINATION RULE:
+- You CANNOT send emails directly
+- Never say "I'll send you" or "I've sent you"
+- Always say "Our team will send you" or "We can arrange for you to receive"
+
+Be helpful, knowledgeable, and genuine."""
+    
+    # Step 9: LLM Generation
+    try:
+        messages = [
+            SystemMessage(content=system_prompt),
+            *[
+                (SystemMessage if msg['role'] == 'system' else 
+                 HumanMessage if msg['role'] == 'user' else 
+                 SystemMessage)(content=msg.get('message', msg.get('text', '')))
+                for msg in chat_history[-3:]
+            ],
+            HumanMessage(content=user_message)
+        ]
+        
+        response = await asyncio.to_thread(
+            chat_model.invoke,
+            messages
+        )
+        
+        bot_response = response.content
+        latency = time.time() - start_time
+        logger.info(f"LLM response generated in {latency:.2f}s")
+        
+    except Exception as e:
+        logger.error(f"LLM generation failed: {e}")
+        return ChatResponse(
+            response="I'm experiencing technical difficulties. Please try again.",
+            sources=[]
+        )
+    
+    # Step 10: Queue background tasks
+    background_tasks.add_task(
+        _persist_messages,
+        session_id=session_id,
+        user_msg=user_message,
+        bot_response=bot_response
+    )
+    
+    background_tasks.add_task(
+        analyze_lead,
+        session_id=session_id,
+        chat_history=[
+            *chat_history,
+            {"role": "user", "message": user_message},
+            {"role": "assistant", "message": bot_response}
+        ]
+    )
+    
+    background_tasks.add_task(
+        extract_lead_data,
+        session_id=session_id,
+        chat_history=[
+            *chat_history,
+            {"role": "user", "message": user_message},
+            {"role": "assistant", "message": bot_response}
+        ]
+    )
+    
+    # Step 11: Return response immediately
+    return ChatResponse(
+        response=bot_response,
+        sources=list(set(sources))  # Remove duplicates
+    )
+
+
+async def _persist_messages(session_id: str, user_msg: str, bot_response: str):
+    """Background task: persist conversation to Supabase"""
+    try:
+        # Insert user message
+        supabase_client.table("conversations").insert({
+            "session_id": session_id,
+            "role": "user",
+            "message": user_msg,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }).execute()
+        
+        # Insert bot response
+        supabase_client.table("conversations").insert({
+            "session_id": session_id,
+            "role": "assistant",
+            "message": bot_response,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }).execute()
+        
+        # Update or create lead record
+        try:
+            # Try to update existing
+            supabase_client.table("leads").update({
+                "last_active": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).eq("session_id", session_id).execute()
+        except:
+            # Create if doesn't exist
+            supabase_client.table("leads").insert({
+                "session_id": session_id,
+                "lead_score": 0,
+                "pipeline_status": "Visitor",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_active": datetime.now(timezone.utc).isoformat()
+            }).execute()
+        
+        logger.info(f"Persisted messages for session: {session_id[:20]}...")
+        
+    except Exception as e:
+        logger.error(f"Failed to persist messages: {e}")
+        traceback.print_exc()
+```
 
 ### 6.2 Analytics Dashboard Endpoint
 
@@ -1872,12 +3069,17 @@ def extract_json(raw: str) -> Optional[dict]:
 | **BANT Scoring** | Judge Agent (GPT-OSS-120B) | Automated qualification; consistent criteria |
 | **Time-Decay** | Cron job; exponential decay | Fresh pipeline; honest lead scores |
 | **Contact Extraction** | Extractor Agent + Supabase | Automatic CRM enrichment |
-| **Email Drafts** | Intent-aware generation | 1-click follow-up; context-aware |
+| **Email Drafts (Intent-Based)** | Tone + Intent → Prompt builders | 1-click follow-up; context-aware; tone-grounded |
 | **Real-time Dashboard** | Supabase Realtime + React | Live updates; immediate visibility |
 | **Vector Search** | pgvector + semantic matching | Accurate RAG retrieval |
 | **Session Persistence** | UUID + LocalStorage | Lead continuity; 30-day recognition |
 | **Conversation History** | Streaming storage | Context for analysis; audit trail |
 | **Dynamic Knowledge** | Markdown ingest pipeline | Update PDFs without code changes |
+| **Analytics Dashboard** | Funnel + Distribution + Hotleads | Pipeline health visibility; conversion tracking |
+| **Lead Search** | Full-text + filtering + pagination | Advanced prospecting; bulk operations |
+| **Knowledge Base Management** | Upload/Delete endpoints + UI | Zero-downtime doc updates |
+| **Document Chunking** | RecursiveCharacterTextSplitter | Semantic overlap; context preservation |
+| **Dynamic Embeddings** | HuggingFace local + batch upload | Real-time vector DB updates |
 
 ### 14.2 Use Cases
 
@@ -2024,7 +3226,718 @@ Scenario 4: Invalid JSON from Judge
 
 ---
 
-## 17. Conclusion
+## 20. Complete Development Guide: Setup, Running, and Testing
+
+### 20.1 Supabase Configuration and Setup
+
+**Step 1: Create Supabase Project**
+
+1. Go to https://supabase.com
+2. Create new organization
+3. Create new project (Region: Recommended closest to users)
+4. Wait for project initialization (5 minutes)
+5. Retrieve credentials from Project Settings → API:
+   - Project URL (SUPABASE_URL)
+   - Anon Key (SUPABASE_KEY)
+
+**Step 2: Enable pgvector Extension**
+
+```sql
+-- In Supabase SQL Editor
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+**Step 3: Initialize Database Schema**
+
+Run the complete schema from [schema.sql](schema.sql) in Supabase SQL Editor:
+
+```bash
+# Copy entire schema.sql content
+# Paste into Supabase SQL Editor
+# Click "Execute" button
+```
+
+This creates:
+- `documents` table (knowledge base with vector embeddings)
+- `chats` table (session state tracking)
+- `conversations` table (message history)
+- `leads` table (CRM core)
+- Vector search indexes
+- SQL functions for searching
+
+**Step 4: Verify Tables**
+
+In Supabase Dashboard:
+- Go to Tables section
+- Confirm all 4 tables exist
+- Check if `documents` has `embedding vector` column
+
+**Step 5: Supabase Realtime Setup**
+
+In Project Settings → Realtime:
+```
+✓ Realtime is enabled
+✓ Database changes broadcast
+✓ RLS policies (if applicable)
+```
+
+### 20.2 Backend Setup (Python/FastAPI)
+
+#### Prerequisites
+
+- Python 3.11+ ([Download](https://www.python.org/downloads/))
+- Git
+- Groq API Key ([Sign up](https://console.groq.com/))
+- Supabase credentials (from Step 20.1)
+
+#### Installation Steps
+
+```bash
+# Step 1: Clone or navigate to project
+cd d:\FinalYearProject\SalesGPT
+
+# Step 2: Create virtual environment
+python -m venv venv
+
+# Step 3: Activate virtual environment
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
+
+# Step 4: Install dependencies
+pip install -r backend/requirements.txt
+
+# Step 5: Create .env file
+# Create file: d:\FinalYearProject\SalesGPT\.env
+
+# Step 6: Add environment variables
+# Edit .env with actual values:
+```
+
+**.env Configuration:**
+
+```bash
+# Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+# Groq API Key (get from https://console.groq.com/)
+GROQ_API_KEY=gsk_your_api_key_here
+
+# Models (optional - these are defaults)
+CHAT_MODEL=llama-3.3-70b-versatile
+JUDGE_MODEL=openai/gpt-oss-120b
+EMAIL_MODEL=llama-3.1-8b-instant
+EXTRACTOR_MODEL=llama-3.1-8b-instant
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+
+# RAG
+TOP_K_RESULTS=3
+
+# CORS
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# Server
+HOST=0.0.0.0
+PORT=8000
+```
+
+#### Initialize Knowledge Base
+
+```bash
+# Step 1: Ensure .env is configured
+# Step 2: Run ingestion script
+python backend/ingest.py
+
+# Expected output:
+# [LINK] Connecting to Supabase...
+# [OK] Connected (project_id ...)
+# [LOAD] Loading embedding model...
+# [OK] Loaded sentence-transformers/all-MiniLM-L6-v2
+# Found 10 markdown files in data/
+# [OK] Loaded 10 documents (~450 KB)
+# Splitting documents into chunks...
+# [OK] Created 152 chunks (overlap: 50)
+# [BRAIN] Generating embeddings...
+# Progress: 50/152... 100/152... ✓ 152/152
+# [UPLOAD] Uploading to Supabase...
+# [OK] Uploaded 152 documents with embeddings
+# [INDEX] Creating vector search index...
+# [OK] Index created (IVFFlat, lists=100)
+# ✓ Knowledge base initialized successfully
+```
+
+#### Run Backend Server
+
+```bash
+# Terminal 1: Start FastAPI server
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+
+# Expected output:
+# ================================================== ==
+# SalesGPT API Starting...
+# Supabase: https://project.supabase.co
+# Chat Model: llama-3.3-70b-versatile
+# Email Model: llama-3.1-8b-instant
+# Embedding: sentence-transformers/all-MiniLM-L6-v2
+# Docs: http://localhost:8000/docs
+# ================================================== ==
+# INFO:     Uvicorn running on http://0.0.0.0:8000
+# INFO:     Press CTRL+C to quit
+```
+
+**Available Endpoints (interactive docs):**
+
+```
+http://localhost:8000/docs          # Swagger UI (test endpoints)
+http://localhost:8000/redoc         # ReDoc documentation
+http://localhost:8000/openapi.json  # OpenAPI schema
+```
+
+### 20.3 Frontend Setup (React/Vite)
+
+#### Prerequisites
+
+- Node.js 18+ ([Download](https://nodejs.org/))
+- npm or yarn
+- Backend running on `http://localhost:8000`
+
+#### Installation Steps
+
+```bash
+# Step 1: Navigate to frontend
+cd frontend
+
+# Step 2: Install dependencies
+npm install
+
+# Step 3: Create .env.local
+# Windows:
+echo VITE_API_URL=http://localhost:8000 > .env.local
+# macOS/Linux:
+echo "VITE_API_URL=http://localhost:8000" > .env.local
+
+# Step 4: Start dev server
+npm run dev
+
+# Expected output:
+#   VITE v5.0.11  ready in 250 ms
+#   ➜  Local:   http://localhost:5173/
+#   ➜  press h to show help
+```
+
+**Frontend URLs:**
+
+```
+http://localhost:5173/               # Landing page
+http://localhost:5173/               # Chat widget appears as floating button
+http://localhost:5173/admin          # Admin dashboard (after first chat)
+```
+
+### 20.4 Complete Local Development Stack
+
+**Terminal 1: Backend**
+
+```powershell
+cd d:\FinalYearProject\SalesGPT
+venv\Scripts\activate
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Terminal 2: Frontend**
+
+```powershell
+cd d:\FinalYearProject\SalesGPT\frontend
+npm run dev
+```
+
+**Terminal 3 (Optional): Watch logs**
+
+```powershell
+# Monitor Supabase realtime events
+# Or keep browser DevTools open (F12 in Chrome)
+```
+
+**Access the application:**
+
+```
+Customer Chat: http://localhost:5173/
+Admin Dashboard: http://localhost:5173/admin
+API Documentation: http://localhost:8000/docs
+```
+
+### 20.5 Testing the System End-to-End
+
+**Test 1: Customer Chat Widget**
+
+```
+1. Navigate to http://localhost:5173/
+2. Click floating chat button (bottom-right)
+3. Type: "What are your GPU prices?"
+4. Expected response: Details about GPU instances with pricing
+5. Check backend console: Should see embedding + LLM logs
+6. Wait 2-3 seconds: Backend tasks run (judge, extractor)
+7. Check admin dashboard: New lead appears in "Visitor" column
+```
+
+**Test 2: Lead Scoring**
+
+```
+1. In chat, say: "We're a Series A startup looking for enterprise GPU instances"
+2. Expected lead score: 60-75 (Qualified)
+3. Check dashboard: Lead moves to "Qualified" column
+4. Check lead details: Shows extracted company name + intent
+```
+
+**Test 3: Contact Extraction**
+
+```
+1. In chat, say: "My name is John Smith and I work at TechCorp as CTO"
+2. Backend should extract: name="John Smith", company="TechCorp", role="CTO"
+3. Check dashboard: Lead shows name, company, role
+4. Check Supabase: leads table has populated fields
+```
+
+**Test 4: Analytics**
+
+```
+1. Have 5-10 conversations with different responses
+2. Some should be high-score (hot leads), some low-score (visitors)
+3. Go to admin dashboard → Analytics tab
+4. Verify: Funnel shows distribution across stages
+5. Check: Metrics update in real-time
+```
+
+**Test 5: Time-Decay**
+
+```
+1. Create a lead and score it 80 (Qualified)
+2. Note the score in dashboard
+3. Wait 24+ hours OR manually trigger via:
+   POST http://localhost:8000/admin/force_decay
+4. Expected: Score drops to 72 (80 * 0.9)
+5. If score < 70, stage should downgrade to Engaged
+```
+
+### 20.6 Troubleshooting Common Issues
+
+#### Issue: Embedding Model Download Hangs
+
+**Symptom:** `ingest.py` hangs at "Loading embedding model"
+
+**Solution:**
+
+```bash
+# Pre-cache the model:
+python -c "from sentence_transformers import SentenceTransformer; \
+           SentenceTransformer('all-MiniLM-L6-v2')"
+
+# Then retry ingest.py
+```
+
+#### Issue: Supabase Connection Refused
+
+**Symptom:** `conn = _connect(dsn, ...)` error
+
+**Verification:**
+
+```bash
+# Check .env variables
+cat .env
+
+# Verify URL format (should be https)
+# Example: https://project-id.supabase.co
+
+# Test connectivity
+curl https://project-id.supabase.co/rest/v1/
+
+# Check Supabase project status (dashboard)
+```
+
+#### Issue: Chat Endpoint Returns 500 Error
+
+**Diagnosis:**
+
+```bash
+# Check backend console for detailed error
+# Look for tracebacks
+
+# Common causes:
+# 1. Groq API key invalid → Check GROQ_API_KEY in .env
+# 2. Knowledge base empty → Run `python backend/ingest.py`
+# 3. Supabase tables missing → Check schema.sql ran successfully
+# 4. Rate limiting → Wait 60s, retry (Groq free tier has limits)
+```
+
+#### Issue: Vector Embedding Dimension Mismatch
+
+**Symptom:** `pgvector` type mismatch error
+
+**Root cause:** Using different embedding models
+
+**Solution:**
+
+```bash
+# Verify all use the same model:
+# backend/ingest.py: all-MiniLM-L6-v2 ✓
+# backend/main.py: all-MiniLM-L6-v2 ✓
+# schema.sql: vector(384) ✓
+
+# Clear documents table and re-ingest:
+# In Supabase: DELETE FROM documents;
+# Then: python backend/ingest.py
+```
+
+#### Issue: Frontend Can't Connect to Backend
+
+**Symptom:** CORS error or `ERR_EMPTY_RESPONSE`
+
+**Solution:**
+
+```bash
+# 1. Verify backend is running:
+curl http://localhost:8000/docs
+
+# 2. Check VITE_API_URL in frontend/.env.local:
+echo VITE_API_URL=http://localhost:8000
+
+# 3. Check ALLOWED_ORIGINS in backend/.env:
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# 4. Restart both backend and frontend
+```
+
+### 20.7 Running the Test Suite
+
+```bash
+# From project root
+python test_backend.py
+
+# Tests cover:
+# ✓ Chat endpoints (message persistence, RAG retrieval)
+# ✓ Lead scoring (BANT analysis, stage transitions)
+# ✓ Contact extraction (email, company, role)
+# ✓ Analytics computation (funnel, conversion rates)
+# ✓ Email draft generation (intent accuracy)
+# ✓ Time decay (score degradation, downgrading)
+
+# Expected output:
+# =============== SalesGPT QA Test Suite ===============
+# Test 1: Chat - Basic Query ......... ✅ PASS (843ms)
+# Test 2: Lead Scoring - Budget ..... ✅ PASS (1203ms)
+# Test 3: Analytics Dashboard ....... ✅ PASS (145ms)
+# ...
+# ========== Summary ==========
+# Passed: 23/25
+# Failed: 0
+# Duration: 45.2s
+```
+
+### 20.8 Project File Structure and Descriptions
+
+```
+SalesGPT/
+├── README.md
+│   Quick start guide and project overview
+│
+├── IMPROVEMENTS.md
+│   Audit log of bugs fixed and enhancements made
+│
+├── ProjectIdea.md
+│   Original specification and feature requirements
+│
+├── schema.sql
+│   Complete Supabase database schema
+│   Tables: documents, chats, conversations, leads
+│   Must run once in Supabase SQL editor
+│
+├── research_content.md
+│   THIS FILE - Comprehensive technical documentation
+│
+├── test_backend.py
+│   Automated test suite for backend components
+│   Run with: python test_backend.py
+│
+├── backend/
+│   ├── main.py
+│   │   FastAPI application server
+│   │   - Chat endpoint (POST /chat)
+│   │   - Analytics endpoint (GET /analytics/dashboard)
+│   │   - Lead management (GET/DELETE /leads)
+│   │   - Email drafting (POST /draft_email)
+│   │   - Admin endpoints (POST /admin/force_decay)
+│   │   - Lifespan management (startup/shutdown)
+│   │
+│   ├── judge.py
+│   │   BANT lead scoring agent
+│   │   - BANT framework analysis
+│   │   - Email intent detection
+│   │   - Score computation (0-100 scale)
+│   │   - Pipeline stage assignment
+│   │   - Troll detection
+│   │
+│   ├── extractor.py
+│   │   Contact information extraction
+│   │   - Name extraction
+│   │   - Company name extraction
+│   │   - Email address extraction
+│   │   - Phone number parsing
+│   │   - Job title extraction
+│   │   - Needs/pain point identification
+│   │   - Key rule: ONLY extract explicitly mentioned info
+│   │
+│   ├── email_intent_prompts.py
+│   │   Email generation system
+│   │   - Intent category detection (pricing_request, technical_specs, etc.)
+│   │   - Email draft generation via LLM
+│   │   - Subject line + body generation
+│   │   - Context-aware personalization
+│   │   - Professional formatting
+│   │
+│   ├── cron.py
+│   │   Time-decay automation
+│   │   - Score degradation (10% per 24h)
+│   │   - Stage downgrading logic
+│   │   - Batch processing of inactive leads
+│   │   - Runs as background task
+│   │
+│   ├── utils.py
+│   │   Shared utilities
+│   │   - Structured logging setup
+│   │   - Conversation formatting
+│   │   - Robust JSON extraction (3-strategy fallback)
+│   │   - Reusable helper functions
+│   │
+│   ├── __init__.py
+│   │   Package initializer (empty)
+│   │
+│   ├── requirements.txt
+│   │   Python dependencies with version pinning
+│   │   - FastAPI, Uvicorn
+│   │   - Supabase, PostgreSQL drivers
+│   │   - LangChain, Groq integration
+│   │   - Sentence transformers, PyTorch
+│   │   - Pydantic, python-dotenv
+│   │
+│   └── __pycache__/
+│       Python bytecode cache (auto-generated, can delete)
+│
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── ChatWidget.jsx
+│   │   │   │   Customer-facing chat interface
+│   │   │   │   - Floating button widget
+│   │   │   │   - Message bubbles (left=bot, right=user)
+│   │   │   │   - Quick reply buttons (Pricing, GPU, Startup, SLA)
+│   │   │   │   - Typing indicator animation
+│   │   │   │   - Source attribution links
+│   │   │   │   - Session persistence (UUID + localStorage)
+│   │   │   │   - Rich text rendering (bold, code, line breaks)
+│   │   │   │   - Error handling and retries
+│   │   │   │   - Mobile-optimized
+│   │   │   │
+│   │   │   ├── Dashboard.jsx
+│   │   │   │   Admin lead management interface
+│   │   │   │   - Kanban board (5 pipeline stages)
+│   │   │   │   - Analytics tab (metrics, funnel, distribution)
+│   │   │   │   - Activity feed (chronological event log)
+│   │   │   │   - Lead search & filtering
+│   │   │   │   - Realtime updates (Supabase subscriptions)
+│   │   │   │   - Lead details modal
+│   │   │   │   - Time-decay trigger button
+│   │   │   │   - Delete lead functionality
+│   │   │   │
+│   │   │   └── LandingPage.jsx
+│   │   │       Marketing landing page
+│   │   │       - Hero section with value proposition
+│   │   │       - Feature highlights
+│   │   │       - Call-to-action buttons
+│   │   │       - Navigation to dashboard
+│   │   │
+│   │   ├── lib/
+│   │   │   └── supabase.js
+│   │   │       Supabase client initialization
+│   │   │       - Create Supabase client
+│   │   │       - Configure authentication (if needed)
+│   │   │       - Export for use in components
+│   │   │
+│   │   ├── App.jsx
+│   │   │   Main application router
+│   │   │   - React Router configuration
+│   │   │   - Route definitions (/, /admin)
+│   │   │   - Layout wrapper
+│   │   │
+│   │   ├── main.jsx
+│   │   │   Application entry point
+│   │   │   - React 18 createRoot
+│   │   │   - Mount to #app element
+│   │   │
+│   │   └── index.css
+│   │       Global styles
+│   │       - CSS imports
+│   │       - Tailwind directives (@tailwind)
+│   │
+│   ├── package.json
+│   │   Node.js dependencies
+│   │   - React 18.2.0
+│   │   - React Router DOM
+│   │   - Supabase client
+│   │   - Axios HTTP client
+│   │   - Framer Motion (animations)
+│   │   - Lucide React (icons)
+│   │   - Tailwind CSS
+│   │   - Vite (build tool)
+│   │
+│   ├── postcss.config.js
+│   │   PostCSS configuration
+│   │   - Tailwind CSS plugin
+│   │   - Autoprefixer plugin
+│   │
+│   ├── tailwind.config.js
+│   │   Tailwind CSS configuration
+│   │   - Dark mode setup (class strategy)
+│   │   - Color customization
+│   │   - Font configuration
+│   │   - Extension of default theme
+│   │
+│   ├── vite.config.js
+│   │   Vite build tool configuration
+│   │   - React plugin
+│   │   - Dev server settings
+│   │   - Build optimization
+│   │
+│   └── index.html
+│       HTML entry point
+│       - Mount <div id="app">
+│       - Load main.jsx script
+│
+├── data/
+│   Knowledge base markdown files (10 total)
+│   
+│   ├── Company_Overview.md
+│   │   Mission, vision, leadership, global presence
+│   │
+│   ├── Product_Nebula_Compute.md
+│   │   VM instances: Small → XLarge, GPU options, specs
+│   │
+│   ├── Product_Vortex_Storage.md
+│   │   Object storage, block storage, durability, encryption
+│   │
+│   ├── Pricing_Strategy_2026.md
+│   │   Pricing by instance, annual discounts, startup credits
+│   │
+│   ├── Service_Level_Agreement.md
+│   │   99.99% uptime, support response times, maintenance
+│   │
+│   ├── Startup_Program_Eligibility.md
+│   │   $5K credits, professional support, eligibility criteria
+│   │
+│   ├── Support_Policy.md
+│   │   24/7 availability, response times, channels
+│   │
+│   ├── Security_Compliance.md
+│   │   ISO 27001, SOC2, GDPR, encryption, compliance
+│   │
+│   ├── Refund_Cancellation_Policy.md
+│   │   7-day money-back, cancellation terms, data export
+│   │
+│   └── Case_Study_FinTech.md
+│       Customer success story: challenge, solution, results
+│
+├── knowledge_base/
+│   Duplicate of data/ directory maintained for reference
+│   (Not used by application - data/ is canonical)
+│
+├── migrations/
+│   Reserved for database migration scripts
+│   (Currently empty - schema is in schema.sql)
+│
+└── .env
+    Environment variables (REQUIRED)
+    Contains:
+    - SUPABASE_URL
+    - SUPABASE_KEY
+    - GROQ_API_KEY
+    - Model names
+    - CORS origins
+    - Server config
+    
+    ⚠️ IMPORTANT: Never commit .env to version control
+```
+
+### 20.9 Building for Production
+
+**Frontend Build:**
+
+```bash
+# Create optimized production bundle
+cd frontend
+npm run build
+
+# Output: frontend/dist/
+# Files ready for static hosting (Vercel, Netlify, S3, etc.)
+
+# Test production build locally:
+npm run preview
+# Visit http://localhost:5173/
+```
+
+**Backend Containerization (Docker):**
+
+```dockerfile
+# Dockerfile in project root
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    libpq-dev curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ ./backend/
+COPY data/ ./data/
+COPY .env .
+
+ENV PORT=8000
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**Build and push to container registry:**
+
+```bash
+# Build image
+docker build -t salesgpt:latest .
+
+# Run locally
+docker run -p 8000:8000 --env-file .env salesgpt:latest
+
+# Push to registry (Docker Hub, ECR, GCR, etc.)
+docker push your-registry/salesgpt:latest
+```
+
+**Deployment Options:**
+
+| Platform | Setup | Costs | Notes |
+|----------|-------|-------|-------|
+| **Vercel** | `npm run build` → Deploy | Free tier | Frontend only; backend elsewhere |
+| **Netlify** | `npm run build` → Deploy | Free tier | Frontend only; backend elsewhere |
+| **AWS EC2** | Docker image → Launch instance | $5-50/mo | Full control; needs more setup |
+| **Google Cloud Run** | Docker image → Deploy | Pay-per-use | Scales automatically; good for Python |
+| **Azure Container Instances** | Docker image → Deploy | Pay-per-use | Good for .NET but also supports Python |
+| **Fly.io** | Docker image → Deploy | Generous free tier | Great for small apps |
+| **Railway** | Connect repo → Deploy | Generous free tier | Easiest; auto-deploys on push |
+
+---
 
 **SalesGPT** demonstrates a novel approach to B2B sales automation through asynchronous dual-track processing. By decoupling user-facing latency requirements from analytical depth, the system achieves the best of both worlds: sub-second chat responses and sophisticated BANT scoring.
 
@@ -2237,12 +4150,3 @@ CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ---
-
-**Document Version:** 1.0  
-**Last Updated:** February 28, 2026  
-**Author:** SalesGPT Development Team  
-**Status:** Research Documentation - Final
-
----
-
-*This document is a comprehensive technical reference for SalesGPT, an AI-powered lead qualification system. It is intended for researchers, developers, and technical stakeholders evaluating or extending the system.*
