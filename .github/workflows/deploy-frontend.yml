@@ -1,10 +1,7 @@
 name: Deploy Frontend to Cloudflare Pages
 
 on:
-  push:
-    branches:
-      - '**' # Triggers on all branches to create preview deployments
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   deploy:

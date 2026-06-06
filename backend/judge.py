@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 JUDGE_MODEL = os.getenv("JUDGE_MODEL", "openai/gpt-oss-120b")
 
 # Initialize Groq Judge Model

@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 EXTRACTOR_MODEL = os.getenv("EXTRACTOR_MODEL", "llama-3.1-8b-instant")
 
 # Initialize Groq Model (fast model for extraction)

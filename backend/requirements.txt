@@ -14,6 +14,7 @@ python-multipart
 supabase>=2.0,<3.0
 postgrest
 storage3
+psycopg2-binary
 
 # ============================================
 # LangChain & RAG
@@ -24,52 +25,7 @@ langchain-text-splitters
 langchain-community
 langchain-huggingface
 langchain-groq>=0.1,<1.0
-
-# ============================================
-# Embeddings & Vector Search
-# ============================================
-sentence-transformers
-transformers
-torch
-huggingface-hub
-
-# ============================================
-# Environment & Configuration
-# ============================================
-# SalesGPT Backend - Python Dependencies
-# Pin major versions for reproducible builds
-
-# ============================================
-# Web Framework
-# ============================================
-fastapi>=0.109,<1.0
-uvicorn[standard]>=0.25,<1.0
-python-multipart
-
-# ============================================
-# Database & Supabase
-# ============================================
-supabase>=2.0,<3.0
-postgrest
-storage3
-
-# ============================================
-# LangChain & RAG
-# ============================================
-langchain>=0.1,<1.0
-langchain-core>=0.1,<1.0
-langchain-text-splitters
-langchain-community
-langchain-huggingface
-langchain-groq>=0.1,<1.0
-
-# ============================================
-# Embeddings & Vector Search
-# ============================================
-sentence-transformers
-transformers
-torch
-huggingface-hub
+langgraph
 
 # ============================================
 # Environment & Configuration
@@ -78,9 +34,7 @@ python-dotenv
 pydantic>=2.0,<3.0
 
 # ============================================
-# HTTP
+# HTTP & Utils
 # ============================================
 httpx
 cachetools
-langgraph
-psycopg2-binary

@@ -66,22 +66,22 @@ Cloudflare Pages is the best alternative to Vercel for teams because the free ti
    - `VITE_SUPABASE_URL`: Your Supabase Project URL.
    - `VITE_SUPABASE_ANON_KEY`: Your Supabase **anon public key**.
    - `VITE_API_URL`: Your Render backend URL (e.g., `https://salesgpt-backend.onrender.com`).
-## 4. GitHub CI/CD Workflows
+## 4. GitHub CI/CD Workflows (Manual Triggers)
 
-The repository is configured with GitHub Actions to deploy branches automatically:
+The repository is configured with GitHub Actions to deploy **manually** via the `workflow_dispatch` event. This gives your contributors complete control over *when* and *which branch* is deployed for testing.
 
 1. **Frontend (Cloudflare Pages):**
    - Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions**.
    - Add `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (generated from your Cloudflare profile).
    - Add `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_API_URL`.
-   - On every push, GitHub Actions will build and deploy the frontend, generating a preview URL.
+   - To Deploy: Go to the **Actions** tab in GitHub → Select **Deploy Frontend to Cloudflare Pages** → Click **Run workflow** → Choose the branch you want to test and run it.
 
 2. **Backend (Render):**
    - Go to your Render Web Service → **Settings** → **Deploy Hooks**.
    - Copy the Deploy Hook URL.
-   - Go to GitHub repository → **Settings** → **Secrets**.
+   - Go to GitHub repository → **Settings** → **Secrets and variables** → **Actions**.
    - Add `RENDER_DEPLOY_HOOK_URL`.
-   - On every push, GitHub will trigger Render to rebuild the Docker container.
+   - To Deploy: Go to the **Actions** tab in GitHub → Select **Deploy Backend to Render** → Click **Run workflow** → Choose your target branch and run it. *(Note: Render's deploy hook deploys the branch configured in your Render dashboard).*
 
 ---
 

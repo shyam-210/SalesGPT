@@ -18,7 +18,7 @@ from supabase import create_client, Client
 logger = get_logger(__name__)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if SUPABASE_URL and SUPABASE_KEY:
     supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)

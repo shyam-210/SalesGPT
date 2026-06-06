@@ -79,7 +79,7 @@ You can run the backend via Docker to ensure it precisely matches the production
 1. Ensure your `.env` file is complete in the root directory.
 2. Run Docker Compose:
    ```bash
-   docker-compose up --build
+   docker compose up --build
    ```
    This will build the Python 3.11 container and expose the API on `http://localhost:8000`.
 3. Run the frontend normally via `npm run dev` in the `/frontend` directory.

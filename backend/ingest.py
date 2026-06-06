@@ -33,11 +33,11 @@ import time
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
-if not all([SUPABASE_URL, SUPABASE_SERVICE_KEY, HUGGINGFACE_API_KEY]):
-    print("[ERROR] Error: SUPABASE_URL, SUPABASE_SERVICE_KEY and HUGGINGFACE_API_KEY must be set in .env file")
+if not all([SUPABASE_URL, SUPABASE_KEY, HUGGINGFACE_API_KEY]):
+    print("[ERROR] Error: SUPABASE_URL, SUPABASE_KEY and HUGGINGFACE_API_KEY must be set in .env file")
     sys.exit(1)
 
 # Paths
@@ -56,7 +56,7 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 # ============================================
 
 print("[LINK] Connecting to Supabase...")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 print("[OK] Connected to Supabase\n")
 
 # ============================================

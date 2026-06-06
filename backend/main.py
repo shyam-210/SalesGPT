@@ -41,7 +41,7 @@ logger = get_logger(__name__)
 # ============================================
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.3-70b-versatile")
@@ -53,7 +53,7 @@ ALLOWED_ORIGINS = os.getenv(
 ).split(",")
 
 if not all([SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY]):
-    raise ValueError("Missing required environment variables: SUPABASE_URL, SUPABASE_SERVICE_KEY, GROQ_API_KEY")
+    raise ValueError("Missing required environment variables: SUPABASE_URL, SUPABASE_KEY, GROQ_API_KEY")
 
 # ============================================
 # Initialize FastAPI (lifespan replaces deprecated on_event)
@@ -362,7 +362,7 @@ analytics_cache = TTLCache(maxsize=1, ttl=10)
 
 @app.get("/analytics/dashboard")
 @cached(cache=analytics_cache)
-async def analytics_dashboard():
+def analytics_dashboard():
     """
     Comprehensive analytics: pipeline funnel, score distribution,
     conversion rates, top leads, activity timeline.
