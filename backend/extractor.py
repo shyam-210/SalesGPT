@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 EXTRACTOR_MODEL = os.getenv("EXTRACTOR_MODEL", "llama-3.1-8b-instant")
 
 # Initialize Groq Model (fast model for extraction)
@@ -111,12 +111,14 @@ async def extract_lead_data(session_id: str, chat_history: List[Dict[str, str]])
         
         if clean_data:
             logger.info("Extracted: %s", ", ".join(f"{k}={v}" for k, v in clean_data.items()))
-            update_lead_data(session_id, clean_data)
+            return clean_data
         else:
             logger.debug("No new data extracted for %s", session_id)
+            return {}
         
     except Exception as e:
         logger.error("Error in lead extraction: %s", e, exc_info=True)
+        return {}
 
 def update_lead_data(session_id: str, data: Dict[str, str]):
     """

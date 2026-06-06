@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
@@ -29,48 +30,46 @@ const Portal = ({ children }) => createPortal(children, document.body)
 
 /* ========== Main Dashboard ========== */
 const Dashboard = () => {
-    const [leads, setLeads] = useState([])
-    const [loading, setLoading] = useState(true)
     const [decaying, setDecaying] = useState(false)
-    const [analytics, setAnalytics] = useState(null)
     const [activeTab, setActiveTab] = useState('pipeline')
     const [searchQuery, setSearchQuery] = useState('')
     const [stageFilter, setStageFilter] = useState('')
     const navigate = useNavigate()
+    const queryClient = useQueryClient()
 
-    const fetchLeads = useCallback(async () => {
-        try {
+    const { data: leads = [], isLoading: loading } = useQuery({
+        queryKey: ['leads'],
+        queryFn: async () => {
             const { data, error } = await supabase.from('leads').select('*').order('lead_score', { ascending: false })
             if (error) throw error
-            setLeads(data || [])
-        } catch (error) { console.error('Error fetching leads:', error) }
-        finally { setLoading(false) }
-    }, [])
+            return data || []
+        }
+    })
 
-    const fetchAnalytics = useCallback(async () => {
-        try {
+    const { data: analytics = null } = useQuery({
+        queryKey: ['analytics'],
+        queryFn: async () => {
             const res = await fetch(`${API}/analytics/dashboard`)
-            if (res.ok) setAnalytics(await res.json())
-        } catch (err) { console.error('Analytics fetch failed:', err) }
-    }, [])
+            if (res.ok) return await res.json()
+            return null
+        }
+    })
+
+    const fetchLeads = useCallback(() => queryClient.invalidateQueries({ queryKey: ['leads'] }), [queryClient])
+    const fetchAnalytics = useCallback(() => queryClient.invalidateQueries({ queryKey: ['analytics'] }), [queryClient])
 
     useEffect(() => {
-        fetchLeads()
-        fetchAnalytics()
-
-        // Realtime: any change to leads triggers a full refetch.
-        // This avoids race conditions from rapid INSERT→UPDATE sequences
-        // when the Judge and Extractor score leads in the background.
+        // Realtime: any change to leads triggers query invalidation.
         const channel = supabase
             .channel('leads-realtime')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => {
-                fetchLeads()
-                fetchAnalytics()
+                queryClient.invalidateQueries({ queryKey: ['leads'] })
+                queryClient.invalidateQueries({ queryKey: ['analytics'] })
             })
             .subscribe()
 
         return () => { supabase.removeChannel(channel) }
-    }, [fetchLeads, fetchAnalytics])
+    }, [queryClient])
 
     const triggerDecay = async () => {
         try { setDecaying(true); await fetch(`${API}/admin/force_decay`, { method: 'POST' }); await fetchLeads(); await fetchAnalytics() }

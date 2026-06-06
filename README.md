@@ -58,25 +58,21 @@ User Query
 
 ```
 SalesGPT/
-├── backend/                 # Python FastAPI backend
+├── backend/                 # Python FastAPI backend (Dockerized)
 │   ├── ingest.py           # Data ingestion script (run once)
 │   ├── main.py             # API server entry point
-│   ├── requirements.txt    # Python dependencies
+│   ├── Dockerfile          # Docker configuration for backend
 │   └── [agents, api, db, services, utils]
 │
-├── frontend/               # React frontend (Vite + Tailwind)
+├── frontend/               # React frontend (Vite + Tailwind + React Query)
 │   └── [src, public, package.json]
 │
-├── data/                   # Knowledge base (10 markdown files)
-│   ├── Company_Overview.md
-│   ├── Product_Nebula_Compute.md
-│   ├── Pricing_Strategy_2026.md
-│   └── [7 more files]
+├── documents/              # Knowledge base, PDF reports, Architecture Diagrams
 │
 ├── .env.template           # Environment variables template
-├── .gitignore
-├── README.md               # This file
-└── SETUP_INSTRUCTIONS.md   # Detailed setup guide
+├── DEPLOYMENT_GUIDE.md     # Cloudflare + Render + Supabase instructions
+├── LOCAL_DEV_GUIDE.md      # Docker and local setup guide
+└── README.md               # This file
 ```
 
 ---

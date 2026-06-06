@@ -21,7 +21,7 @@ from typing import List, Dict
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_core.documents import Document
 import time
 
@@ -33,10 +33,11 @@ import time
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    print("[ERROR] Error: SUPABASE_URL and SUPABASE_KEY must be set in .env file")
+if not all([SUPABASE_URL, SUPABASE_SERVICE_KEY, HUGGINGFACE_API_KEY]):
+    print("[ERROR] Error: SUPABASE_URL, SUPABASE_SERVICE_KEY and HUGGINGFACE_API_KEY must be set in .env file")
     sys.exit(1)
 
 # Paths
@@ -55,7 +56,7 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 # ============================================
 
 print("[LINK] Connecting to Supabase...")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 print("[OK] Connected to Supabase\n")
 
 # ============================================
@@ -63,15 +64,14 @@ print("[OK] Connected to Supabase\n")
 # ============================================
 
 print(f"[AI] Loading embedding model: {EMBEDDING_MODEL}")
-print("   (This may take a minute on first run - downloading model...)")
+print("   (Connecting to HuggingFace API...)")
 
-embeddings = HuggingFaceEmbeddings(
-    model_name=EMBEDDING_MODEL,
-    model_kwargs={'device': 'cpu'},  # Force CPU (no GPU required)
-    encode_kwargs={'normalize_embeddings': True}  # Normalize for cosine similarity
+embeddings = HuggingFaceEndpointEmbeddings(
+    model=EMBEDDING_MODEL,
+    huggingfacehub_api_token=HUGGINGFACE_API_KEY,
 )
 
-print("[OK] Embedding model loaded\n")
+print("[OK] Embedding model API configured\n")
 
 # ============================================
 # Load Markdown Files
