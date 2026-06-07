@@ -208,13 +208,19 @@ async def analyze_lead(session_id: str, chat_history: List[Dict[str, str]]):
         logger.info("Score: %d | Stage: %s | Intent: %s", score, stage, email_intent)
         logger.debug("Reasoning: %s", reasoning)
         
-        # Step 4: Update/Insert lead in Supabase
-        update_lead_in_db(session_id, score, stage, reasoning, email_intent, email_context)
-        
+        # Step 4: Return result
         logger.info("Lead analysis complete for %s", session_id)
+        return {
+            "score": score,
+            "stage": stage,
+            "reasoning": reasoning,
+            "email_intent": email_intent,
+            "email_context": email_context
+        }
         
     except Exception as e:
         logger.error("Error in Judge Agent: %s", e, exc_info=True)
+        return {}
 
 def update_lead_in_db(session_id: str, score: int, stage: str, reasoning: str, email_intent: str = "general_followup", email_context: str = ""):
     """

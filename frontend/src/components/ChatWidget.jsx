@@ -68,7 +68,12 @@ const ChatWidget = () => {
     const inputRef = useRef(null)
 
     useEffect(() => {
-        setSessionId(`session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`)
+        let storedSessionId = localStorage.getItem('salesgpt_session_id');
+        if (!storedSessionId) {
+            storedSessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+            localStorage.setItem('salesgpt_session_id', storedSessionId);
+        }
+        setSessionId(storedSessionId);
     }, [])
 
     useEffect(() => {

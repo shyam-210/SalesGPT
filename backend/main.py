@@ -14,21 +14,23 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List
 
+from cachetools import TTLCache, cached
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_core.messages import SystemMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from supabase import create_client, Client
 
-from backend.judge import analyze_lead
-from backend.extractor import extract_lead_data
+from backend.agent_graph import run_agent_graph
 from backend.email_intent_prompts import build_email_prompt
 from backend.cron import apply_time_decay
 from backend.utils import get_logger, extract_json
+from backend.db_setup import run_auto_migrations
 
 load_dotenv()
 
@@ -41,6 +43,7 @@ logger = get_logger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama-3.3-70b-versatile")
 EMAIL_MODEL = os.getenv("EMAIL_MODEL", "llama-3.1-8b-instant")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
@@ -67,6 +70,10 @@ async def lifespan(app: FastAPI):
     logger.info("Embedding : %s", EMBEDDING_MODEL)
     logger.info("Docs: http://localhost:8000/docs")
     logger.info("=" * 50)
+    
+    # Run auto-migrations
+    run_auto_migrations()
+    
     yield
     logger.info("SalesGPT API shutting down.")
 
@@ -108,21 +115,20 @@ email_model = ChatGroq(
 )
 logger.info("Email model ready: %s", EMAIL_MODEL)
 
-logger.info("Loading embedding model...")
-embeddings = HuggingFaceEmbeddings(
-    model_name=EMBEDDING_MODEL,
-    model_kwargs={"device": "cpu"},
-    encode_kwargs={"normalize_embeddings": True},
+logger.info("Loading embedding model via Inference API...")
+embeddings = HuggingFaceEndpointEmbeddings(
+    model=EMBEDDING_MODEL,
+    huggingfacehub_api_token=HUGGINGFACE_API_KEY,
 )
-logger.info("Embedding model loaded: %s", EMBEDDING_MODEL)
+logger.info("Embedding model initialized: %s", EMBEDDING_MODEL)
 
 logger.info("Connecting to Supabase...")
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 logger.info("Supabase client initialized")
 
-# In-memory chat history (keyed by session_id)
-chat_sessions: dict[str, list[dict]] = {}
-logger.info("Chat session storage initialized")
+# In-memory chat history (keyed by session_id) with 24-hour TTL to prevent memory leaks
+chat_sessions = TTLCache(maxsize=10000, ttl=86400)
+logger.info("Chat session storage initialized with TTLCache")
 
 # ============================================
 # Pydantic Models
@@ -352,8 +358,11 @@ async def get_leads():
 # Analytics & Intelligence Endpoints
 # ============================================
 
+analytics_cache = TTLCache(maxsize=1, ttl=10)
+
 @app.get("/analytics/dashboard")
-async def analytics_dashboard():
+@cached(cache=analytics_cache)
+def analytics_dashboard():
     """
     Comprehensive analytics: pipeline funnel, score distribution,
     conversion rates, top leads, activity timeline.
@@ -923,17 +932,11 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         )
         
         # ============================================
-        # SLOW TRACK: Background Tasks
+        # SLOW TRACK: Background LangGraph Workflow
         # ============================================
         
         background_tasks.add_task(
-            analyze_lead,
-            request.session_id,
-            chat_sessions[request.session_id],
-        )
-        
-        background_tasks.add_task(
-            extract_lead_data,
+            run_agent_graph,
             request.session_id,
             chat_sessions[request.session_id],
         )

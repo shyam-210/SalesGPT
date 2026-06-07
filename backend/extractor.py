@@ -111,12 +111,14 @@ async def extract_lead_data(session_id: str, chat_history: List[Dict[str, str]])
         
         if clean_data:
             logger.info("Extracted: %s", ", ".join(f"{k}={v}" for k, v in clean_data.items()))
-            update_lead_data(session_id, clean_data)
+            return clean_data
         else:
             logger.debug("No new data extracted for %s", session_id)
+            return {}
         
     except Exception as e:
         logger.error("Error in lead extraction: %s", e, exc_info=True)
+        return {}
 
 def update_lead_data(session_id: str, data: Dict[str, str]):
     """
