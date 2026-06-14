@@ -1,14 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams, Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { fetchWithAuth } from '../lib/api'
 import {
-    ArrowLeft, RefreshCw, TrendingUp, Users, Target, Flame, X, Mail, Copy, Check,
+    ArrowLeft, RefreshCw, Code, TrendingUp, Users, Target, Flame, X, Mail, Copy, Check,
     Send, Zap, Clock, Search, Filter, BarChart3, Activity, ChevronDown, ChevronUp,
-    MessageSquare, Trash2, Eye, Percent, Upload, FileText, Database, AlertCircle
+    MessageSquare, Trash2, Eye, Percent, Upload, FileText, Database, AlertCircle, Sparkles, Bot
 } from 'lucide-react'
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
+import toast from 'react-hot-toast'
+import ChatWidget from './ChatWidget'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -29,7 +32,28 @@ const STAGE_COLORS = {
 const Portal = ({ children }) => createPortal(children, document.body)
 
 /* ========== Main Dashboard ========== */
+
+const ThemeToggle = () => {
+    const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
+    
+    useEffect(() => {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('theme', theme);
+    }, [theme]);
+    
+    return (
+        <button 
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="p-2 rounded-full hover:bg-slate-800/50 text-slate-400 hover:text-white transition-colors"
+            title="Toggle Theme"
+        >
+            {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
+        </button>
+    )
+}
+
 const Dashboard = () => {
+    const { id: agentId } = useParams();
     const [decaying, setDecaying] = useState(false)
     const [activeTab, setActiveTab] = useState('pipeline')
     const [searchQuery, setSearchQuery] = useState('')
@@ -37,10 +61,30 @@ const Dashboard = () => {
     const navigate = useNavigate()
     const queryClient = useQueryClient()
 
+    // Check onboarding
+    useEffect(() => {
+        const checkOnboarding = async () => {
+            try {
+                const res = await fetchWithAuth(`${API}/onboarding`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: "ping" })
+                });
+                const data = await res.json();
+                if (data.status !== 'completed') {
+                    navigate('/onboarding');
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        };
+        checkOnboarding();
+    }, [navigate]);
+
     const { data: leads = [], isLoading: loading } = useQuery({
         queryKey: ['leads'],
         queryFn: async () => {
-            const { data, error } = await supabase.from('leads').select('*').order('lead_score', { ascending: false })
+            const { data, error } = await supabase.from('leads').select('*').eq('agent_id', agentId).order('lead_score', { ascending: false })
             if (error) throw error
             return data || []
         }
@@ -49,7 +93,7 @@ const Dashboard = () => {
     const { data: analytics = null } = useQuery({
         queryKey: ['analytics'],
         queryFn: async () => {
-            const res = await fetch(`${API}/analytics/dashboard`)
+            const res = await fetchWithAuth(`${API}/analytics/dashboard`)
             if (res.ok) return await res.json()
             return null
         }
@@ -62,7 +106,7 @@ const Dashboard = () => {
         // Realtime: any change to leads triggers query invalidation.
         const channel = supabase
             .channel('leads-realtime')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => {
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'leads', filter: `agent_id=eq.${agentId}` }, () => {
                 queryClient.invalidateQueries({ queryKey: ['leads'] })
                 queryClient.invalidateQueries({ queryKey: ['analytics'] })
             })
@@ -72,13 +116,13 @@ const Dashboard = () => {
     }, [queryClient])
 
     const triggerDecay = async () => {
-        try { setDecaying(true); await fetch(`${API}/admin/force_decay`, { method: 'POST' }); await fetchLeads(); await fetchAnalytics() }
+        try { setDecaying(true); await fetchWithAuth(`${API}/admin/force_decay`, { method: 'POST' }); await fetchLeads(); await fetchAnalytics() }
         catch (err) { console.error('Decay failed:', err) } finally { setDecaying(false) }
     }
 
     const deleteLead = async (sid) => {
         try {
-            const res = await fetch(`${API}/leads/${sid}`, { method: 'DELETE' })
+            const res = await fetchWithAuth(`${API}/leads/${sid}`, { method: 'DELETE' })
             if (res.ok) { await fetchLeads(); fetchAnalytics() }
         } catch (err) { console.error('Delete failed:', err) }
     }
@@ -102,91 +146,118 @@ const Dashboard = () => {
         { title: 'Approached', stage: 'Approached', icon: Mail, color: 'purple', gradient: 'from-purple-600 to-purple-700', range: 'Done' },
     ]
 
+    const navItems = [
+        { id: 'pipeline', label: 'Pipeline', icon: Target },
+        { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+        { id: 'activity', label: 'Activity Logs', icon: Activity },
+        { id: 'knowledge', label: 'Knowledge Base', icon: Database },
+        { id: 'config', label: 'Agent Config', icon: Code },
+    ]
+
     if (loading) return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="min-h-screen bg-slate-950/40 flex items-center justify-center">
             <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}><RefreshCw className="text-indigo-500" size={48} /></motion.div>
         </div>
     )
 
     return (
-        <div className="min-h-screen bg-slate-950 text-slate-200 relative overflow-hidden">
+        <div className="flex h-screen overflow-hidden bg-slate-950 text-slate-200">
             <div className="pointer-events-none fixed inset-0 -z-10"><div className="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] bg-[radial-gradient(ellipse_at_20%_50%,rgba(99,102,241,0.08)_0%,transparent_50%),radial-gradient(ellipse_at_80%_20%,rgba(139,92,246,0.06)_0%,transparent_50%),radial-gradient(ellipse_at_50%_80%,rgba(59,130,246,0.05)_0%,transparent_50%)] animate-gradient-shift" /></div>
 
-            {/* Header */}
-            <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-6 pb-4">
-                <div className="flex items-center justify-between flex-wrap gap-4">
-                    <div>
-                        <h1 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent mb-1">Command Center</h1>
-                        <p className="text-slate-500 text-xs sm:text-sm tracking-wide">Real-time lead intelligence &middot; BANT scoring &middot; AI email &middot; Knowledge base</p>
-                    </div>
-                    <div className="flex gap-2 flex-wrap">
-                        <button onClick={triggerDecay} disabled={decaying} className="flex items-center gap-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-700/50 px-3 py-2 rounded-xl transition-all text-xs font-medium disabled:opacity-50">
-                            {decaying ? <RefreshCw size={14} className="animate-spin" /> : <Clock size={14} />} Force Decay
-                        </button>
-                        <button onClick={() => { fetchLeads(); fetchAnalytics() }} className="flex items-center gap-2 bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/50 px-3 py-2 rounded-xl transition-all text-xs">
-                            <RefreshCw size={14} /> Refresh
-                        </button>
-                        <button onClick={() => navigate('/')} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-2 rounded-xl transition-all text-xs font-medium shadow-lg shadow-indigo-600/20">
-                            <ArrowLeft size={14} /> Home
-                        </button>
-                    </div>
+            {/* Sidebar */}
+            <div className="w-64 flex-shrink-0 bg-slate-900/60 backdrop-blur-xl border-r border-slate-800/60 flex flex-col z-10 shadow-xl">
+                <div className="p-6">
+                    <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-400 to-emerald-400 bg-clip-text text-transparent mb-1 flex items-center gap-2"><Flame size={20} className="text-indigo-400"/> SalesGPT</h1>
+                    <p className="text-slate-500 text-[10px] uppercase tracking-widest font-semibold ml-7">Command Center</p>
                 </div>
-
-                {/* Tabs */}
-                <div className="flex gap-1 mt-5 bg-slate-900/60 p-1 rounded-xl border border-slate-800/60 w-fit">
-                    {[
-                        { id: 'pipeline', label: 'Pipeline', icon: Target },
-                        { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-                        { id: 'activity', label: 'Activity', icon: Activity },
-                        { id: 'knowledge', label: 'Knowledge Base', icon: Database },
-                    ].map(tab => (
-                        <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition-all ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:text-white hover:bg-slate-800/60'}`}>
-                            <tab.icon size={14} />{tab.label}
+                
+                <div className="flex-1 px-4 py-2 space-y-1.5 overflow-y-auto scrollbar-thin">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-3 px-3">Navigation</p>
+                    {navItems.map(tab => (
+                        <button 
+                            key={tab.id} 
+                            onClick={() => setActiveTab(tab.id)} 
+                            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${activeTab === tab.id ? 'bg-indigo-600/10 text-indigo-400 border border-indigo-500/20 shadow-sm' : 'text-slate-400 border border-transparent hover:text-white hover:bg-slate-800/60'}`}
+                        >
+                            <tab.icon size={18} className={activeTab === tab.id ? 'text-indigo-400' : 'text-slate-500'} />
+                            {tab.label}
                         </button>
                     ))}
                 </div>
+                
+                <div className="p-4 border-t border-slate-800/60 flex flex-col gap-3">
+                    <div className="flex items-center justify-between px-2">
+                        <span className="text-xs font-medium text-slate-400">Theme</span>
+                        <ThemeToggle />
+                    </div>
+                    <Link to="/hub" className="flex items-center justify-center gap-2 w-full bg-slate-800 hover:bg-slate-700 text-white px-3 py-2.5 rounded-xl transition-all text-xs font-medium shadow-sm border border-slate-700">
+                        <ArrowLeft size={14} /> Back to Hub
+                    </Link>
+                </div>
             </div>
 
-            <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-8">
-                <AnimatePresence mode="wait">
-                    {activeTab === 'pipeline' && (
-                        <motion.div key="pipeline" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-                            <div className="flex flex-wrap gap-3 mb-5 items-center">
-                                <div className="relative flex-1 min-w-[200px] max-w-md">
-                                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                                    <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search leads..." className="w-full bg-slate-900/60 text-white placeholder-slate-500 rounded-xl pl-10 pr-4 py-2.5 text-sm border border-slate-800/60 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none transition-all" />
+            {/* Main Content Area */}
+            <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
+                {/* Header */}
+                <div className="h-20 flex items-center justify-between px-8 border-b border-slate-800/30 bg-slate-900/30 backdrop-blur-md z-10 flex-shrink-0">
+                    <div>
+                        <h2 className="text-xl font-bold text-white">{navItems.find(n => n.id === activeTab)?.label}</h2>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button onClick={triggerDecay} disabled={decaying} className="flex items-center gap-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/20 px-3 py-1.5 rounded-lg transition-all text-xs font-semibold disabled:opacity-50">
+                            {decaying ? <RefreshCw size={14} className="animate-spin" /> : <Clock size={14} />} Force Decay
+                        </button>
+                        <button onClick={() => { fetchLeads(); fetchAnalytics() }} className="flex items-center gap-2 bg-slate-800/60 hover:bg-slate-700 text-slate-300 border border-slate-700/50 px-3 py-1.5 rounded-lg transition-all text-xs font-semibold">
+                            <RefreshCw size={14} /> Refresh Data
+                        </button>
+                    </div>
+                </div>
+
+                {/* Content scroll area */}
+                <div className="flex-1 overflow-y-auto p-8 scrollbar-thin">
+                    <AnimatePresence mode="wait">
+                        
+                        {activeTab === 'config' && <motion.div key="config" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><AgentConfigPanel agentId={agentId} /></motion.div>}
+
+                        {activeTab === 'pipeline' && (
+                            <motion.div key="pipeline" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+                                <div className="flex flex-wrap gap-4 mb-6 items-center">
+                                    <div className="relative flex-1 min-w-[200px] max-w-md">
+                                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                        <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search leads by name, email..." className="w-full glass-surface backdrop-blur-sm text-white placeholder-slate-500 rounded-xl pl-10 pr-4 py-2.5 text-sm border border-slate-800/60 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none transition-all shadow-sm" />
+                                    </div>
+                                    <select value={stageFilter} onChange={e => setStageFilter(e.target.value)} className="glass-panel backdrop-blur-sm text-slate-300 rounded-xl px-4 py-2.5 text-sm border border-slate-800/60 focus:outline-none focus:border-indigo-500/50 shadow-sm cursor-pointer">
+                                        <option value="">All Pipeline Stages</option>
+                                        {columns.map(c => <option key={c.stage} value={c.stage}>{c.title}</option>)}
+                                    </select>
+                                    <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 bg-slate-900/40 px-3 py-1.5 rounded-lg border border-slate-800/40"><Filter size={14} />{filteredLeads.length} of {leads.length} leads</span>
                                 </div>
-                                <select value={stageFilter} onChange={e => setStageFilter(e.target.value)} className="bg-slate-900/60 text-slate-300 rounded-xl px-3 py-2.5 text-xs border border-slate-800/60 focus:outline-none focus:border-indigo-500/50">
-                                    <option value="">All Stages</option>
-                                    {columns.map(c => <option key={c.stage} value={c.stage}>{c.title}</option>)}
-                                </select>
-                                <span className="flex items-center gap-1 text-xs text-slate-500"><Filter size={12} />{filteredLeads.length} of {leads.length}</span>
-                            </div>
 
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 mb-5">
-                                {columns.map(col => {
-                                    const count = getLeadsByStage(col.stage).length
-                                    return (
-                                        <motion.div key={col.stage} whileHover={{ y: -2 }} onClick={() => setStageFilter(stageFilter === col.stage ? '' : col.stage)}
-                                            className={`bg-slate-900/60 backdrop-blur-sm rounded-xl p-4 border shadow-lg cursor-pointer transition-all ${stageFilter === col.stage ? 'border-indigo-500/50 ring-1 ring-indigo-500/20' : 'border-slate-800/80 hover:border-slate-700'}`}>
-                                            <div className="flex items-center justify-between">
-                                                <div><p className="text-slate-500 text-[10px] font-medium uppercase tracking-wider">{col.title}</p><p className="text-2xl font-bold text-white mt-1">{count}</p></div>
-                                                <div className={`p-2 rounded-lg bg-gradient-to-br ${col.gradient}`}><col.icon className="text-white/90" size={18} /></div>
-                                            </div>
-                                        </motion.div>
-                                    )
-                                })}
-                            </div>
+                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-6">
+                                    {columns.map(col => {
+                                        const count = getLeadsByStage(col.stage).length
+                                        return (
+                                            <motion.div key={col.stage} whileHover={{ y: -2 }} onClick={() => setStageFilter(stageFilter === col.stage ? '' : col.stage)}
+                                                className={`bg-slate-900/60 backdrop-blur-md rounded-xl p-4 border shadow-sm cursor-pointer transition-all ${stageFilter === col.stage ? 'border-indigo-500/50 ring-1 ring-indigo-500/20 shadow-indigo-500/10' : 'border-slate-800/80 hover:border-slate-700'}`}>
+                                                <div className="flex items-center justify-between">
+                                                    <div><p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider">{col.title}</p><p className="text-2xl font-bold text-white mt-1">{count}</p></div>
+                                                    <div className={`p-2.5 rounded-xl bg-gradient-to-br ${col.gradient} shadow-inner shadow-white/10`}><col.icon className="text-white" size={18} /></div>
+                                                </div>
+                                            </motion.div>
+                                        )
+                                    })}
+                                </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
-                                {columns.map(column => <KanbanColumn key={column.stage} {...column} leads={getLeadsByStage(column.stage)} onLeadUpdate={() => { fetchLeads(); fetchAnalytics() }} onDeleteLead={deleteLead} />)}
-                            </div>
-                        </motion.div>
-                    )}
-                    {activeTab === 'analytics' && <motion.div key="analytics" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><AnalyticsPanel analytics={analytics} /></motion.div>}
-                    {activeTab === 'activity' && <motion.div key="activity" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><ActivityFeed leads={leads} /></motion.div>}
-                    {activeTab === 'knowledge' && <motion.div key="knowledge" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><KnowledgeBasePanel /></motion.div>}
-                </AnimatePresence>
+                                <div className="grid grid-cols-1 xl:grid-cols-5 lg:grid-cols-3 md:grid-cols-2 gap-4">
+                                    {columns.map(column => <KanbanColumn key={column.stage} {...column} leads={getLeadsByStage(column.stage)} onLeadUpdate={() => { fetchLeads(); fetchAnalytics() }} onDeleteLead={deleteLead} />)}
+                                </div>
+                            </motion.div>
+                        )}
+                        {activeTab === 'analytics' && <motion.div key="analytics" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><AnalyticsPanel analytics={analytics} /></motion.div>}
+                        {activeTab === 'activity' && <motion.div key="activity" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><ActivityFeed leads={leads} /></motion.div>}
+                        {activeTab === 'knowledge' && <motion.div key="knowledge" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}><KnowledgeBasePanel /></motion.div>}
+                    </AnimatePresence>
+                </div>
             </div>
         </div>
     )
@@ -196,6 +267,19 @@ const Dashboard = () => {
 const KnowledgeBasePanel = () => {
     const [documents, setDocuments] = useState([])
     const [loading, setLoading] = useState(true)
+    const [agentId, setTenantId] = useState('')
+    
+    useEffect(() => {
+        const fetchTenantId = async () => {
+            try {
+                const res = await fetchWithAuth(`${API}/me`);
+                const data = await res.json();
+                setTenantId(data.tenant_id);
+            } catch(e) { console.error(e) }
+        };
+        fetchTenantId();
+    }, []);
+
     const [uploading, setUploading] = useState(false)
     const [deleting, setDeleting] = useState(null)
     const [error, setError] = useState(null)
@@ -207,7 +291,7 @@ const KnowledgeBasePanel = () => {
     const fetchDocuments = async () => {
         setLoading(true)
         try {
-            const res = await fetch(`${API}/documents`)
+            const res = await fetchWithAuth(`${API}/documents`)
             if (!res.ok) throw new Error('Failed to fetch documents')
             const data = await res.json()
             setDocuments(data.documents || [])
@@ -231,7 +315,7 @@ const KnowledgeBasePanel = () => {
         try {
             const formData = new FormData()
             formData.append('file', file)
-            const res = await fetch(`${API}/documents/upload`, { method: 'POST', body: formData })
+            const res = await fetchWithAuth(`${API}/documents/upload`, { method: 'POST', body: formData })
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}))
                 throw new Error(errData.detail || 'Upload failed')
@@ -252,7 +336,7 @@ const KnowledgeBasePanel = () => {
         setError(null)
         setSuccess(null)
         try {
-            const res = await fetch(`${API}/documents/${encodeURIComponent(source)}`, { method: 'DELETE' })
+            const res = await fetchWithAuth(`${API}/documents/${encodeURIComponent(source)}`, { method: 'DELETE' })
             if (!res.ok) throw new Error('Delete failed')
             const data = await res.json()
             setSuccess(`Deleted "${source}" — ${data.chunks_deleted} chunks removed`)
@@ -301,7 +385,7 @@ const KnowledgeBasePanel = () => {
             </AnimatePresence>
 
             {/* Document List */}
-            <div className="bg-slate-900/60 backdrop-blur-sm rounded-2xl border border-slate-800/60 overflow-hidden">
+            <div className="glass-panel backdrop-blur-sm rounded-2xl border border-slate-800/60 overflow-hidden">
                 {loading ? (
                     <div className="flex items-center justify-center py-16"><RefreshCw size={24} className="animate-spin text-indigo-500" /></div>
                 ) : documents.length === 0 ? (
@@ -344,7 +428,7 @@ const KnowledgeBasePanel = () => {
             </div>
 
             {/* Info Box */}
-            <div className="bg-slate-900/40 border border-slate-800/50 rounded-xl p-4 text-xs text-slate-500 leading-relaxed">
+            <div className="glass-panel border border-slate-800/50 rounded-xl p-4 text-xs text-slate-500 leading-relaxed">
                 <p className="font-medium text-slate-400 mb-1">How it works</p>
                 <p>When you upload a .md file, it is split into ~500-character chunks, each chunk is embedded using MiniLM-L6-v2, and the embeddings are stored in the pgvector database. The RAG chatbot will immediately start using the new content. Deleting a document removes all its chunks from the vector store.</p>
             </div>
@@ -365,7 +449,7 @@ const AnalyticsPanel = ({ analytics }) => {
         <div className="space-y-6">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {[{ label: 'Total Leads', value: analytics.total_leads, icon: Users }, { label: 'Avg Score', value: analytics.average_score, icon: TrendingUp }, { label: 'Email Capture', value: `${analytics.email_capture_rate}%`, icon: Mail }, { label: 'Conversion', value: `${analytics.conversion_rates.overall_conversion}%`, icon: Percent }].map((m, i) => (
-                    <motion.div key={m.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }} className="bg-slate-900/60 backdrop-blur-sm rounded-2xl p-5 border border-slate-800/60">
+                    <motion.div key={m.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }} className="glass-panel backdrop-blur-sm rounded-2xl p-5 border border-slate-800/60">
                         <div className="flex items-center justify-between mb-3"><p className="text-[11px] text-slate-500 font-medium uppercase tracking-wider">{m.label}</p><m.icon size={16} className="text-indigo-400" /></div>
                         <p className="text-3xl font-bold text-white">{m.value}</p>
                     </motion.div>
@@ -373,7 +457,7 @@ const AnalyticsPanel = ({ analytics }) => {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-slate-900/60 backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
+                <div className="glass-panel backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
                     <h3 className="text-white font-semibold text-sm mb-4 flex items-center gap-2"><Target size={16} className="text-indigo-400" /> Pipeline Funnel</h3>
                     <div className="space-y-3">{funnelStages.map((s, i) => {
                         const c = analytics.pipeline_funnel[s] || 0
@@ -382,7 +466,7 @@ const AnalyticsPanel = ({ analytics }) => {
                     })}</div>
                 </div>
 
-                <div className="bg-slate-900/60 backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
+                <div className="glass-panel backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
                     <h3 className="text-white font-semibold text-sm mb-4 flex items-center gap-2"><BarChart3 size={16} className="text-indigo-400" /> Score Distribution</h3>
                     <div className="flex items-end gap-3 h-40">{Object.entries(sb).map(([b, c], i) => {
                         const barColors = ['bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-emerald-500', 'bg-indigo-500']
@@ -392,7 +476,7 @@ const AnalyticsPanel = ({ analytics }) => {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-slate-900/60 backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
+                <div className="glass-panel backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
                     <h3 className="text-white font-semibold text-sm mb-4 flex items-center gap-2"><Percent size={16} className="text-indigo-400" /> Conversion Rates</h3>
                     <div className="space-y-4">{[
                         { label: 'Visitor → Engaged', value: analytics.conversion_rates.visitor_to_engaged },
@@ -402,7 +486,7 @@ const AnalyticsPanel = ({ analytics }) => {
                     ].map((r, i) => (<div key={r.label}><div className="flex items-center justify-between text-xs mb-1"><span className={r.hl ? 'text-indigo-300 font-semibold' : 'text-slate-400'}>{r.label}</span><span className={`font-bold ${r.hl ? 'text-indigo-400 text-sm' : 'text-white'}`}>{r.value}%</span></div><div className="w-full bg-slate-800/60 rounded-full h-2 overflow-hidden"><motion.div className={`h-2 rounded-full ${r.hl ? 'bg-indigo-500' : 'bg-slate-500'}`} initial={{ width: 0 }} animate={{ width: `${Math.min(r.value, 100)}%` }} transition={{ duration: 0.6, delay: i*0.1 }} /></div></div>))}</div>
                 </div>
 
-                <div className="bg-slate-900/60 backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
+                <div className="glass-panel backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
                     <h3 className="text-white font-semibold text-sm mb-4 flex items-center gap-2"><Flame size={16} className="text-emerald-400" /> Top Hot Leads</h3>
                     <div className="space-y-2 max-h-[280px] overflow-y-auto scrollbar-thin">
                         {(analytics.hot_leads || []).length === 0 && <p className="text-slate-600 text-xs text-center py-8">No hot leads yet</p>}
@@ -426,7 +510,7 @@ const ActivityFeed = ({ leads }) => {
     const icons = { Visitor: Users, Engaged: TrendingUp, Qualified: Target, 'Hot Lead': Flame, Approached: Mail }
 
     return (
-        <div className="bg-slate-900/60 backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
+        <div className="glass-panel backdrop-blur-sm rounded-2xl p-6 border border-slate-800/60">
             <h3 className="text-white font-semibold text-sm mb-4 flex items-center gap-2"><Activity size={16} className="text-indigo-400" /> Recent Activity</h3>
             <div className="space-y-1.5 max-h-[600px] overflow-y-auto scrollbar-thin">
                 {sorted.map((l, i) => { const Icon = icons[l.pipeline_status] || Users; const c = STAGE_COLORS[l.pipeline_status] || 'slate'; return (
@@ -498,7 +582,7 @@ const LeadDetailModal = ({ lead, color, onClose }) => {
     const [showC, setShowC] = useState(false)
     const getScoreColor = (s) => s >= 70 ? 'text-emerald-400' : s >= 30 ? 'text-amber-400' : 'text-red-400'
 
-    const fetchConvos = async () => { setLoadingC(true); try { const r = await fetch(`${API}/conversations/${lead.session_id}`); if (r.ok) { const d = await r.json(); setConvos(d.messages || []) } } catch (err) { console.error('Failed to load conversations:', err) } finally { setLoadingC(false) } }
+    const fetchConvos = async () => { setLoadingC(true); try { const r = await fetchWithAuth(`${API}/conversations/${lead.session_id}`); if (r.ok) { const d = await r.json(); setConvos(d.messages || []) } } catch (err) { console.error('Failed to load conversations:', err) } finally { setLoadingC(false) } }
     const toggleC = () => { if (!showC && convos.length === 0) fetchConvos(); setShowC(!showC) }
 
     return (
@@ -549,6 +633,19 @@ const LeadDetailModal = ({ lead, color, onClose }) => {
 /* ========== Email Draft Modal ========== */
 const EmailDraftModal = ({ lead, onClose, onLeadUpdate }) => {
     const [loading, setLoading] = useState(true)
+    const [agentId, setTenantId] = useState('')
+    
+    useEffect(() => {
+        const fetchTenantId = async () => {
+            try {
+                const res = await fetchWithAuth(`${API}/me`);
+                const data = await res.json();
+                setTenantId(data.tenant_id);
+            } catch(e) { console.error(e) }
+        };
+        fetchTenantId();
+    }, []);
+
     const [error, setError] = useState(null)
     const [subject, setSubject] = useState('')
     const [body, setBody] = useState('')
@@ -558,7 +655,7 @@ const EmailDraftModal = ({ lead, onClose, onLeadUpdate }) => {
     useEffect(() => { generateEmail() }, [])
 
     const generateEmail = async () => {
-        try { setLoading(true); setError(null); const r = await fetch(`${API}/draft_email`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: lead.session_id }) }); if (!r.ok) throw new Error('Failed'); const d = await r.json(); setSubject(d.subject); setBody(d.body) }
+        try { setLoading(true); setError(null); const r = await fetchWithAuth(`${API}/draft_email`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: lead.session_id }) }); if (!r.ok) throw new Error('Failed'); const d = await r.json(); setSubject(d.subject); setBody(d.body) }
         catch (e) { setError('Failed to generate email. Please try again.') } finally { setLoading(false) }
     }
 
@@ -568,7 +665,7 @@ const EmailDraftModal = ({ lead, onClose, onLeadUpdate }) => {
         try {
             setSending(true)
             window.location.href = `mailto:${lead.email || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
-            const r = await fetch(`${API}/leads/${lead.session_id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pipeline_status: 'Approached' }) })
+            const r = await fetchWithAuth(`${API}/leads/${lead.session_id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pipeline_status: 'Approached' }) })
             if (!r.ok) throw new Error('Failed to update status')
             onLeadUpdate(); onClose()
         } catch (e) { alert('Email client opened, but status update failed.') } finally { setSending(false) }
@@ -601,5 +698,301 @@ const EmailDraftModal = ({ lead, onClose, onLeadUpdate }) => {
         </div>
     )
 }
+
+
+/* ========== Agent Config Panel ========== */
+const AgentConfigPanel = ({ agentId }) => {
+    const [personaPrompt, setPersonaPrompt] = useState('')
+    const [companyName, setCompanyName] = useState('')
+    const [description, setDescription] = useState('')
+    const [saving, setSaving] = useState(false)
+    const [loading, setLoading] = useState(true)
+    const [showAddTool, setShowAddTool] = useState(false)
+    const [selectedTool, setSelectedTool] = useState('Web Browser Tool')
+    const [toolReason, setToolReason] = useState('')
+    const [tools, setTools] = useState([{ name: 'Search Knowledge Base', purpose: 'Default tool to search facts', fixed: true }])
+    
+    const [aiInstruction, setAiInstruction] = useState('')
+    const [updatingAI, setUpdatingAI] = useState(false)
+
+    const AVAILABLE_TOOLS = [
+        'Web Browser Tool',
+        'Calendar Booking Tool',
+        'Email Draft Tool',
+        'Weather Tool'
+    ]
+
+    useEffect(() => {
+        const fetchAgent = async () => {
+            try {
+                const res = await fetchWithAuth(`${API}/widget/config/${agentId}`)
+                if (res.ok) {
+                    const data = await res.json()
+                    setCompanyName(data.company_name || '')
+                    setDescription(data.description || '')
+                }
+                const res2 = await supabase.from('agents').select('persona_prompt').eq('id', agentId).single();
+                if (res2.data) setPersonaPrompt(res2.data.persona_prompt || '');
+                
+                // Parse existing custom tools from prompt if any
+                if (res2.data?.persona_prompt) {
+                    const extraTools = [];
+                    const lines = res2.data.persona_prompt.split('\\n');
+                    for (let i = 0; i < lines.length; i++) {
+                        if (lines[i].startsWith('TOOL: ')) {
+                            extraTools.push({ 
+                                name: lines[i].replace('TOOL: ', '').trim(), 
+                                purpose: 'Custom tool added by user',
+                                fixed: false
+                            });
+                        }
+                    }
+                    if (extraTools.length > 0) setTools(prev => [...prev, ...extraTools]);
+                }
+            } catch (e) {
+                console.error(e)
+            } finally {
+                setLoading(false)
+            }
+        }
+        fetchAgent();
+    }, [agentId])
+
+    const saveProfile = async () => {
+        setSaving(true)
+        try {
+            const res = await fetchWithAuth(`${API}/agents/${agentId}/profile`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ company_name: companyName, description: description })
+            });
+            if (res.ok) toast.success("Profile saved successfully!");
+        } catch (e) {
+            console.error(e)
+            toast.error("Failed to save profile.")
+        } finally {
+            setSaving(false)
+        }
+    }
+
+    const updatePromptWithAI = async () => {
+        if (!aiInstruction) return;
+        setUpdatingAI(true)
+        try {
+            const res = await fetchWithAuth(`${API}/agents/${agentId}/update_prompt`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ instruction: aiInstruction })
+            });
+            if (res.ok) {
+                const data = await res.json()
+                setPersonaPrompt(data.persona_prompt)
+                setAiInstruction('')
+            }
+        } catch (e) {
+            console.error(e)
+            toast.error("Failed to update prompt.")
+        } finally {
+            setUpdatingAI(false)
+        }
+    }
+
+    const addTool = async () => {
+        if (!selectedTool || !toolReason) return;
+        setUpdatingAI(true)
+        try {
+            const res = await fetchWithAuth(`${API}/agents/${agentId}/update_prompt`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ instruction: "", tool_reason: `Add the tool '${selectedTool}' because: ${toolReason}` })
+            });
+            if (res.ok) {
+                const data = await res.json()
+                setPersonaPrompt(data.persona_prompt + `\\n\\nTOOL: ${selectedTool}\\nPURPOSE: ${toolReason}`)
+                setTools([...tools, { name: selectedTool, purpose: toolReason, fixed: false }]);
+                setShowAddTool(false);
+                setToolReason('');
+            }
+        } catch (e) {
+            console.error(e)
+            toast.error("Failed to add tool.")
+        } finally {
+            setUpdatingAI(false)
+        }
+    }
+    
+    const embedCode = `<script src="${API}/widget.js" data-agent-id="${agentId}" data-api-url="${API}"></script>`
+
+    const [showTestAgent, setShowTestAgent] = useState(false)
+
+    if (loading) return <div className="flex items-center justify-center py-20"><RefreshCw className="animate-spin text-indigo-500" size={32} /></div>;
+
+    return (
+        <div className="max-w-4xl mx-auto">
+            <div className="glass-panel backdrop-blur-xl border border-slate-800/50 rounded-2xl p-8 shadow-xl flex flex-col">
+                <div className="flex items-center justify-between mb-8">
+                    <div>
+                        <h2 className="text-2xl font-bold text-white mb-1">Agent Configuration</h2>
+                        <p className="text-slate-500 text-xs">Manage identity, prompt instructions, and tool integrations.</p>
+                    </div>
+                    <button 
+                        onClick={() => setShowTestAgent(true)}
+                        className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-lg shadow-indigo-600/20"
+                    >
+                        <MessageSquare size={16} /> Test Agent
+                    </button>
+                </div>
+                
+                <div className="space-y-8">
+                    <div className="glass-surface p-5 rounded-xl border border-slate-800 shadow-inner">
+                        <label className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-3 block">Public Profile</label>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="text-slate-500 text-xs mb-1 block">Company Name</label>
+                                <input 
+                                    value={companyName} onChange={e => setCompanyName(e.target.value)}
+                                    className="w-full glass-surface border border-slate-700/60 rounded-lg p-2.5 text-sm text-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none transition-all shadow-sm" placeholder="Company Name"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-slate-500 text-xs mb-1 block">Description / Subtitle</label>
+                                <input 
+                                    value={description} onChange={e => setDescription(e.target.value)}
+                                    className="w-full glass-surface border border-slate-700/60 rounded-lg p-2.5 text-sm text-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none transition-all shadow-sm" placeholder="AI Sales Agent"
+                                />
+                            </div>
+                            <button onClick={saveProfile} disabled={saving} className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors border border-slate-700">
+                                {saving ? 'Saving...' : 'Save Profile'}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-3 block flex items-center justify-between">
+                            <span>System Persona Prompt (Locked)</span>
+                        </label>
+                        <textarea 
+                            value={personaPrompt}
+                            readOnly
+                            className="w-full h-64 glass-surface text-slate-300 border border-slate-800 rounded-xl p-5 text-xs leading-relaxed focus:outline-none resize-none shadow-inner font-mono"
+                        />
+                        
+                        <div className="mt-4 bg-indigo-950/20 p-4 rounded-xl border border-indigo-500/20 flex flex-col gap-3 shadow-sm">
+                            <p className="text-xs font-semibold text-indigo-400 flex items-center gap-1.5"><Sparkles size={14}/> Auto-Update with AI</p>
+                            <div className="flex gap-2">
+                                <input 
+                                    value={aiInstruction}
+                                    onChange={e => setAiInstruction(e.target.value)}
+                                    placeholder="e.g. Make the tone more professional and shorter"
+                                    className="flex-1 glass-surface border border-indigo-500/30 rounded-xl p-2.5 text-sm text-white focus:border-indigo-500 focus:outline-none shadow-sm"
+                                />
+                                <button onClick={updatePromptWithAI} disabled={updatingAI || !aiInstruction} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-50 shadow-md">
+                                    {updatingAI ? <RefreshCw size={16} className="animate-spin" /> : 'Update'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div className="flex items-center justify-between mb-3">
+                            <label className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Enabled External Tools</label>
+                            <button onClick={() => setShowAddTool(!showAddTool)} className="flex items-center gap-1 text-indigo-400 text-xs font-semibold hover:text-indigo-300 bg-indigo-500/10 px-2.5 py-1 rounded-lg"><Zap size={12}/> Add Tool</button>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                            {tools.map((t, i) => (
+                                <div key={i} className="flex items-start gap-3 glass-surface p-4 rounded-xl border border-slate-700/50 shadow-sm">
+                                    <div className="mt-0.5 w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
+                                    <div>
+                                        <p className="text-sm text-white font-semibold">{t.name}</p>
+                                        <p className="text-[10px] text-slate-400 mt-1">{t.purpose}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {showAddTool && (
+                            <div className="mt-4 bg-slate-950/40 p-5 rounded-xl border border-indigo-500/30 shadow-inner">
+                                <h4 className="text-white text-sm font-semibold mb-4">Add External Tool</h4>
+                                <div className="space-y-3">
+                                    <select 
+                                        value={selectedTool} 
+                                        onChange={e => setSelectedTool(e.target.value)}
+                                        className="w-full glass-surface border border-slate-700/60 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 shadow-sm"
+                                    >
+                                        {AVAILABLE_TOOLS.map(t => <option key={t} value={t}>{t}</option>)}
+                                    </select>
+                                    <input 
+                                        placeholder="Why is this tool being added? (e.g. to let users book demos)" 
+                                        value={toolReason} 
+                                        onChange={e => setToolReason(e.target.value)} 
+                                        className="w-full glass-surface border border-slate-700/60 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 shadow-sm" 
+                                    />
+                                    <div className="flex gap-2 pt-1">
+                                        <button onClick={addTool} disabled={updatingAI} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">
+                                            {updatingAI ? 'Adding...' : 'Add Tool to Agent'}
+                                        </button>
+                                        <button onClick={() => setShowAddTool(false)} className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-lg text-sm font-semibold">Cancel</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    
+                    <div>
+                        <label className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-3 block">Integration (Embed Code)</label>
+                        <div className="relative">
+                            <pre className="glass-surface border border-slate-800 rounded-xl p-5 text-[11px] text-slate-400 overflow-x-auto font-mono shadow-inner">
+                                <code>{embedCode}</code>
+                            </pre>
+                            <button 
+                                onClick={() => { navigator.clipboard.writeText(embedCode); toast.success("Copied to clipboard!"); }}
+                                className="absolute top-3 right-3 text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-2 rounded-lg transition-colors border border-slate-700"
+                                title="Copy to clipboard"
+                            >
+                                <Copy size={14} />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Test Agent Modal/Drawer via Portal */}
+            <AnimatePresence>
+                {showTestAgent && (
+                    <Portal>
+                        <div className="fixed inset-0 z-[9999] flex justify-end">
+                            {/* Backdrop */}
+                            <motion.div 
+                                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                                className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
+                                onClick={() => setShowTestAgent(false)}
+                            />
+                            
+                            {/* Slide-over Drawer */}
+                            <motion.div 
+                                initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+                                transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+                                className="relative w-full max-w-md h-full bg-slate-900 border-l border-slate-800 shadow-2xl flex flex-col"
+                            >
+                                <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/50 backdrop-blur-md">
+                                    <div>
+                                        <h3 className="text-lg font-bold text-white flex items-center gap-2"><Bot size={18} className="text-indigo-400"/> Test Interface</h3>
+                                        <p className="text-[10px] text-slate-500">Live preview of your agent</p>
+                                    </div>
+                                    <button onClick={() => setShowTestAgent(false)} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"><X size={20}/></button>
+                                </div>
+                                <div className="flex-1 bg-slate-950 relative">
+                                    <ChatWidget testAgentId={agentId} isTestMode={true} />
+                                </div>
+                            </motion.div>
+                        </div>
+                    </Portal>
+                )}
+            </AnimatePresence>
+        </div>
+    )
+}
+
 
 export default Dashboard

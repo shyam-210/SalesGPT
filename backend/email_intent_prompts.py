@@ -144,6 +144,7 @@ def build_email_prompt(
     conversation: str,
     intent: str,
     context: str,
+    company_name: str = "Our Company",
 ) -> str:
     """
     Build a high-accuracy email prompt driven entirely by:
@@ -176,7 +177,7 @@ def build_email_prompt(
     needs_line = f"  Needs: {needs}" if needs else ""
     bant_line = f"  BANT Assessment: {bant_reasoning}" if bant_reasoning else ""
 
-    prompt = f"""You are a B2B Sales Representative for Team Defaulters, a cloud infrastructure company.
+    prompt = f"""You are a B2B Sales Representative for {company_name}.
 Your task: write a follow-up email that is **100 % grounded in the conversation below**.
 
 =====================  LEAD PROFILE  =====================
@@ -218,7 +219,7 @@ FORMAT RULES:
   - Subject line: concise, relevant to their request
   - Body: 2-4 short paragraphs (no filler, every sentence adds value)
   - End with a simple CTA: "Let me know if you have any questions."
-  - Signature: "Best regards,\\nTeam Defaulters"
+  - Signature: "Best regards,\\n{company_name}"
 
 OUTPUT REQUIREMENTS - CRITICAL:
   ✓ Return ONLY valid JSON object: {{"subject": "...", "body": "..."}}
@@ -238,7 +239,7 @@ WRONG EXAMPLES (DO NOT DO THIS):
   ✗ {{\"subject\": ... (do not escape quotes with backslash)
 
 CORRECT EXAMPLE:
-  {{"subject": "Your Pricing Summary", "body": "Hi John,\\n\\nThank you for your interest...\\n\\nBest regards,\\nTeam Defaulters"}}
+  {{"subject": "Your Pricing Summary", "body": "Hi John,\\n\\nThank you for your interest...\\n\\nBest regards,\\n{company_name}"}}
 
 Generate the email now:"""
 

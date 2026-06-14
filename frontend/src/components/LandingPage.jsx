@@ -2,7 +2,6 @@ import { useNavigate } from 'react-router-dom'
 import { useEffect, useState, useRef } from 'react'
 import { motion, useInView } from 'framer-motion'
 import { ArrowRight, Shield, Cpu, BarChart3, Zap, MessageSquare, Brain, Workflow, TrendingUp, Clock, Mail, Target } from 'lucide-react'
-import ChatWidget from './ChatWidget'
 
 /* ========== Animated Counter ========== */
 const AnimatedCounter = ({ end, suffix = '', duration = 2 }) => {
@@ -256,8 +255,6 @@ function LandingPage() {
                     <p className="text-slate-600 text-xs">Built with FastAPI, React, Supabase, Groq</p>
                 </div>
             </footer>
-
-            <ChatWidget />
         </div>
     )
 }

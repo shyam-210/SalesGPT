@@ -56,13 +56,43 @@ const TypingIndicator = () => (
     </motion.div>
 )
 
-const ChatWidget = () => {
-    const [isOpen, setIsOpen] = useState(false)
+const ChatWidget = ({ agentId, testAgentId, isTestMode }) => {
+    const [isOpen, setIsOpen] = useState(isTestMode || false)
     const [isExpanded, setIsExpanded] = useState(false)
     const [messages, setMessages] = useState([])
     const [inputValue, setInputValue] = useState('')
     const [isLoading, setIsLoading] = useState(false)
+    const activeAgentId = testAgentId || agentId || window.SalesGPTWidgetConfig?.tenantId || "default";
     const [sessionId, setSessionId] = useState('')
+    const [agentConfig, setAgentConfig] = useState(null)
+
+    useEffect(() => {
+        const fetchConfig = async () => {
+            try {
+                const response = await axios.get(`${API}/widget/config/${activeAgentId}`)
+                setAgentConfig(response.data)
+            } catch(e) {
+                console.error("Failed to load agent config", e)
+            }
+        }
+        if (activeAgentId && activeAgentId !== "default") {
+            fetchConfig()
+        }
+    }, [activeAgentId])
+    
+    const agentName = agentConfig?.company_name || 'AI Sales Rep'
+    const agentDescription = agentConfig?.description || 'How can I assist you today?'
+    const defaultQuickReplies = [
+        { label: 'Pricing', text: 'What are your pricing plans?' },
+        { label: 'Features', text: 'Tell me about your features' },
+        { label: 'Support', text: 'How do I contact support?' }
+    ]
+    
+    const displayQuickReplies = (agentConfig?.quick_questions && agentConfig.quick_questions.length > 0)
+        ? agentConfig.quick_questions.map(q => ({ label: q, text: q }))
+        : defaultQuickReplies
+
+
     const [showQuickReplies, setShowQuickReplies] = useState(true)
     const messagesEndRef = useRef(null)
     const inputRef = useRef(null)
@@ -93,7 +123,7 @@ const ChatWidget = () => {
         setShowQuickReplies(false)
 
         try {
-            const response = await axios.post(`${API}/chat`, { message: text.trim(), session_id: sessionId })
+            const response = await axios.post(`${API}/chat`, { message: text.trim(), session_id: sessionId, agent_id: activeAgentId })
             setMessages(prev => [...prev, {
                 role: 'bot', text: response.data.response, sources: response.data.sources || [], time: new Date()
             }])
@@ -112,13 +142,16 @@ const ChatWidget = () => {
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
 
-    const widgetSize = isExpanded
-        ? 'fixed inset-4 sm:inset-8 w-auto h-auto'
-        : 'fixed bottom-24 right-6 w-[400px] h-[620px]'
+    const widgetSize = isTestMode 
+        ? 'absolute inset-0 w-full h-full rounded-2xl border-none shadow-none'
+        : isExpanded
+            ? 'fixed inset-4 sm:inset-8 w-auto h-auto'
+            : 'fixed bottom-24 right-6 w-[400px] h-[620px]'
 
     return (
         <>
             {/* Floating Action Button */}
+            {!isTestMode && (
             <motion.button
                 onClick={() => setIsOpen(!isOpen)}
                 className="fixed bottom-6 right-6 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full p-4 shadow-2xl shadow-indigo-600/30 z-50 transition-colors"
@@ -142,15 +175,16 @@ const ChatWidget = () => {
                     <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-emerald-400 rounded-full animate-ping" />
                 )}
             </motion.button>
+            )}
 
             {/* Chat Window */}
             <AnimatePresence>
                 {isOpen && (
                     <motion.div
-                        initial={{ opacity: 0, scale: 0, originX: 1, originY: 1 }}
+                        initial={isTestMode ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0, originX: 1, originY: 1 }}
                         animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0 }}
-                        transition={{ type: 'spring', damping: 22, stiffness: 320 }}
+                        exit={isTestMode ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0 }}
+                        transition={isTestMode ? { duration: 0 } : { type: 'spring', damping: 22, stiffness: 320 }}
                         className={`${widgetSize} bg-slate-900/80 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/40 flex flex-col z-40 border border-slate-800/80 overflow-hidden transition-all duration-300`}
                     >
                         {/* Header */}
@@ -161,7 +195,7 @@ const ChatWidget = () => {
                                         <MessageCircle size={18} className="text-white" />
                                     </div>
                                     <div>
-                                        <h3 className="text-white font-semibold text-sm">Team Defaulters</h3>
+                                        <h3 className="text-white font-semibold text-sm">{agentName}</h3>
                                         <div className="flex items-center gap-1.5">
                                             <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
                                             <span className="text-indigo-200/70 text-[10px]">Online now</span>
@@ -184,8 +218,8 @@ const ChatWidget = () => {
                                     <div className="w-14 h-14 rounded-full bg-indigo-600/20 flex items-center justify-center mx-auto mb-4 border border-indigo-700/30">
                                         <Sparkles size={24} className="text-indigo-400" />
                                     </div>
-                                    <p className="text-slate-300 text-sm font-medium mb-1">Cloud Infrastructure Expert</p>
-                                    <p className="text-slate-500 text-xs leading-relaxed">Ask about pricing, SLA, GPU instances, startup programs, or architecture recommendations.</p>
+                                    <p className="text-slate-300 text-sm font-medium mb-1">{agentName}</p>
+                                    <p className="text-slate-500 text-xs leading-relaxed">{agentDescription}</p>
                                 </motion.div>
                             )}
 
@@ -242,7 +276,7 @@ const ChatWidget = () => {
                                 >
                                     <p className="text-[10px] text-slate-500 mb-1.5 px-1">Quick questions</p>
                                     <div className="flex flex-wrap gap-1.5">
-                                        {QUICK_REPLIES.map((qr, i) => (
+                                        {displayQuickReplies.map((qr, i) => (
                                             <motion.button
                                                 key={i}
                                                 onClick={() => handleQuickReply(qr.text)}

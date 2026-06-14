@@ -38,3 +38,5 @@ pydantic>=2.0,<3.0
 # ============================================
 httpx
 cachetools
+
+langgraph-checkpoint-postgres

@@ -13,16 +13,19 @@ import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List
-
 from cachetools import TTLCache, cached
 
+
+
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Depends, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import httpx
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from supabase import create_client, Client
 
@@ -30,6 +33,7 @@ from backend.agent_graph import run_agent_graph
 from backend.email_intent_prompts import build_email_prompt
 from backend.cron import apply_time_decay
 from backend.utils import get_logger, extract_json
+from backend.agent import run_smart_chat, init_agent_memory, close_agent_memory
 from backend.db_setup import run_auto_migrations
 
 load_dotenv()
@@ -126,17 +130,48 @@ logger.info("Connecting to Supabase...")
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 logger.info("Supabase client initialized")
 
-# In-memory chat history (keyed by session_id) with 24-hour TTL to prevent memory leaks
-chat_sessions = TTLCache(maxsize=10000, ttl=86400)
-logger.info("Chat session storage initialized with TTLCache")
+
+# ---------------------------------------------------------
+# Security Dependency
+# ---------------------------------------------------------
+security = HTTPBearer()
+
+async def get_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    """Verifies the Supabase JWT and returns the user_id."""
+    if not supabase_client:
+        raise HTTPException(status_code=500, detail="Database not configured")
+        
+    token = credentials.credentials
+    try:
+        async with httpx.AsyncClient() as client:
+            headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}"}
+            resp = await client.get(f"{SUPABASE_URL}/auth/v1/user", headers=headers)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return resp.json().get("id")
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+async def get_agent_id(x_agent_id: str = Header(..., description="The Agent ID"), user_id: str = Depends(get_user_id)) -> str:
+    """Validates that the provided Agent ID belongs to the authenticated user."""
+    if not x_agent_id:
+        raise HTTPException(status_code=400, detail="X-Agent-ID header is missing")
+    agent_resp = supabase_client.table("agents").select("id").eq("id", x_agent_id).eq("user_id", user_id).execute()
+    if not agent_resp.data:
+        raise HTTPException(status_code=403, detail="Access denied to this agent")
+    return x_agent_id
+
+
 
 # ============================================
 # Pydantic Models
 # ============================================
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=4096)
     session_id: str = Field(..., min_length=1, max_length=128)
+    message: str = Field(..., min_length=1, max_length=4096)
+    agent_id: str = Field(..., description="The tenant ID")
 
 class ChatResponse(BaseModel):
     response: str
@@ -341,11 +376,39 @@ async def root():
 async def health():
     return {"status": "ok"}
 
+@app.post("/agents")
+async def create_agent(user_id: str = Depends(get_user_id)):
+    resp = supabase_client.table("agents").insert({"user_id": user_id, "company_name": "New Business", "onboarding_status": "pending"}).execute()
+    return resp.data[0]
+
+
+@app.get("/widget/config/{agent_id}")
+async def get_widget_config(agent_id: str):
+    """Public endpoint to fetch widget configuration"""
+    resp = supabase_client.table("agents").select("company_name, description, quick_questions").eq("id", agent_id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    data = resp.data[0]
+    return {
+        "company_name": data.get("company_name", "AI Assistant"),
+        "description": data.get("description", "I'm an AI assistant. How can I help you today?"),
+        "quick_questions": data.get("quick_questions", [])
+    }
+
+@app.get("/agents")
+async def get_my_agents(user_id: str = Depends(get_user_id)):
+    resp = supabase_client.table("agents").select("*").eq("user_id", user_id).execute()
+    return resp.data
+
+@app.get("/me")
+async def get_me(agent_id: str = Depends(get_agent_id)):
+    return {"agent_id": agent_id}
+
 @app.get("/leads")
-async def get_leads():
+async def get_leads(agent_id: str = Depends(get_agent_id)):
     """Get all leads sorted by score"""
     try:
-        result = supabase_client.table("leads").select("*").order("lead_score", desc=True).execute()
+        result = supabase_client.table("leads").select("*").eq("agent_id", agent_id).order("lead_score", desc=True).execute()
         return {
             "total_leads": len(result.data),
             "leads": result.data
@@ -362,13 +425,13 @@ analytics_cache = TTLCache(maxsize=1, ttl=10)
 
 @app.get("/analytics/dashboard")
 @cached(cache=analytics_cache)
-def analytics_dashboard():
+def analytics_dashboard(agent_id: str = Depends(get_agent_id)):
     """
     Comprehensive analytics: pipeline funnel, score distribution,
     conversion rates, top leads, activity timeline.
     """
     try:
-        result = supabase_client.table("leads").select("*").execute()
+        result = supabase_client.table("leads").select("*").eq("agent_id", agent_id).execute()
         leads = result.data or []
 
         # Pipeline funnel counts
@@ -435,12 +498,12 @@ def analytics_dashboard():
 
 
 @app.post("/leads/search")
-async def search_leads(request: LeadSearchRequest):
+async def search_leads(request: LeadSearchRequest, agent_id: str = Depends(get_agent_id)):
     """
     Advanced lead search with filters, sorting, and pagination.
     """
     try:
-        query = supabase_client.table("leads").select("*", count="exact")
+        query = supabase_client.table("leads").select("*", count="exact").eq("agent_id", agent_id)
 
         if request.pipeline_status:
             query = query.eq("pipeline_status", request.pipeline_status)
@@ -476,7 +539,7 @@ async def search_leads(request: LeadSearchRequest):
 
 
 @app.get("/conversations/{session_id}")
-async def get_conversations(session_id: str):
+async def get_conversations(session_id: str, agent_id: str = Depends(get_agent_id)):
     """
     Retrieve full conversation history for a session.
     """
@@ -511,17 +574,15 @@ async def get_conversations(session_id: str):
 
 
 @app.delete("/leads/{session_id}")
-async def delete_lead(session_id: str):
+async def delete_lead(session_id: str, agent_id: str = Depends(get_agent_id)):
     """Delete a lead and its conversations."""
     try:
         # Delete conversations first
-        supabase_client.table("conversations").delete().eq("session_id", session_id).execute()
+        supabase_client.table("conversations").delete().eq("session_id", session_id).eq("agent_id", agent_id).execute()
         # Delete the lead
-        result = supabase_client.table("leads").delete().eq("session_id", session_id).execute()
+        result = supabase_client.table("leads").delete().eq("session_id", session_id).eq("agent_id", agent_id).execute()
         if not result.data:
             raise HTTPException(status_code=404, detail="Lead not found")
-        # Clean up chat session memory
-        chat_sessions.pop(session_id, None)
         return {"success": True, "deleted_session": session_id}
     except HTTPException:
         raise
@@ -531,7 +592,7 @@ async def delete_lead(session_id: str):
 
 
 @app.get("/analytics/activity")
-async def analytics_activity():
+async def analytics_activity(agent_id: str = Depends(get_agent_id)):
     """
     Recent activity feed — last 50 lead updates for the activity timeline.
     """
@@ -549,7 +610,7 @@ async def analytics_activity():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/draft_email", response_model=DraftEmailResponse)
-async def draft_email(request: DraftEmailRequest):
+async def draft_email(request: DraftEmailRequest, agent_id: str = Depends(get_agent_id)):
     """
     Generate a personalized follow-up email for a lead using GPT-OSS-120B.
     Uses chat history and lead data to create a contextual, helpful email.
@@ -558,7 +619,7 @@ async def draft_email(request: DraftEmailRequest):
         logger.info("Drafting email for session: %s", request.session_id)
         
         # Fetch lead data
-        lead_result = supabase_client.table("leads").select("*").eq("session_id", request.session_id).execute()
+        lead_result = supabase_client.table("leads").select("*").eq("session_id", request.session_id).eq("agent_id", agent_id).execute()
         
         if not lead_result.data:
             raise HTTPException(status_code=404, detail="Lead not found")
@@ -566,7 +627,7 @@ async def draft_email(request: DraftEmailRequest):
         lead = lead_result.data[0]
         
         # Fetch conversation history
-        conv_result = supabase_client.table("conversations").select("*").eq("session_id", request.session_id).order("created_at").execute()
+        conv_result = supabase_client.table("conversations").select("*").eq("session_id", request.session_id).eq("agent_id", agent_id).order("created_at").execute()
         
         # Format conversation
         conversation_text = ""
@@ -631,7 +692,7 @@ async def draft_email(request: DraftEmailRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/leads/{session_id}")
-async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest):
+async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest, agent_id: str = Depends(get_agent_id)):
     """Update lead pipeline status (e.g., mark as Approached)"""
     try:
         logger.info("Updating lead status: %s -> %s", session_id, request.pipeline_status)
@@ -639,7 +700,7 @@ async def update_lead_status(session_id: str, request: UpdateLeadStatusRequest):
         result = supabase_client.table("leads").update({
             "pipeline_status": request.pipeline_status,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("session_id", session_id).execute()
+        }).eq("session_id", session_id).eq("agent_id", agent_id).execute()
         
         if not result.data:
             raise HTTPException(status_code=404, detail="Lead not found")
@@ -663,10 +724,10 @@ CHUNK_OVERLAP = 50
 
 
 @app.get("/documents")
-async def list_documents():
+async def list_documents(agent_id: str = Depends(get_agent_id)):
     """List all documents in the knowledge base, grouped by source."""
     try:
-        result = supabase_client.table("documents").select("id,metadata").execute()
+        result = supabase_client.table("documents").select("id,metadata").eq("agent_id", agent_id).execute()
         rows = result.data or []
 
         source_map: dict[str, int] = {}
@@ -685,7 +746,7 @@ async def list_documents():
 
 
 @app.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), agent_id: str = Depends(get_agent_id)):
     """Upload a .md file: chunk, embed and store in the vector database."""
     if not file.filename or not file.filename.endswith(".md"):
         raise HTTPException(status_code=400, detail="Only .md files are supported")
@@ -735,6 +796,7 @@ async def upload_document(file: UploadFile = File(...)):
             records.append({
                 "content": chunk_text,
                 "embedding": embedding,
+                "agent_id": agent_id,
                 "metadata": {"source": source_name, "filename": source_name.replace(".md", "")},
             })
 
@@ -754,10 +816,10 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @app.delete("/documents/{source}")
-async def delete_document(source: str):
+async def delete_document(source: str, agent_id: str = Depends(get_agent_id)):
     """Delete all chunks belonging to a document source."""
     try:
-        result = supabase_client.table("documents").select("id,metadata").execute()
+        result = supabase_client.table("documents").select("id,metadata").eq("agent_id", agent_id).execute()
         ids_to_delete = [
             r["id"] for r in (result.data or [])
             if (r.get("metadata") or {}).get("source") == source
@@ -785,14 +847,14 @@ async def delete_document(source: str):
 # ============================================
 
 @app.post("/admin/force_decay")
-async def force_decay():
+async def force_decay(agent_id: str = Depends(get_agent_id)):
     """
     Manually trigger time-decay on all eligible leads.
     Useful for live demos to show score decay in real-time.
     """
     try:
         logger.info("Manual time-decay triggered by admin")
-        summary = apply_time_decay()
+        summary = apply_time_decay(agent_id)
         return {
             "success": True,
             "message": f"Decay applied: {summary['updated']} leads updated, {summary['skipped']} skipped",
@@ -803,124 +865,161 @@ async def force_decay():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+from backend.onboarding_graph import run_onboarding
+
+class OnboardingRequest(BaseModel):
+    message: str
+
+class OnboardingResponse(BaseModel):
+    response: str
+    status: str
+    persona: str | None = None
+
+
+class PromptUpdateRequest(BaseModel):
+    persona_prompt: str
+
+
+class UpdatePromptRequest(BaseModel):
+    instruction: str
+    tool_reason: str = None # If adding a tool
+
+@app.post("/agents/{agent_id}/update_prompt")
+async def update_agent_prompt(agent_id: str, req: UpdatePromptRequest, user_id: str = Depends(get_user_id)):
+    resp = supabase_client.table("agents").select("persona_prompt").eq("id", agent_id).eq("user_id", user_id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    current_prompt = resp.data[0].get("persona_prompt", "")
+    
+    # Use LLM to rewrite the prompt based on instructions
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        temperature=0.3,
+        max_tokens=1024,
+        api_key=os.getenv("GROQ_API_KEY")
+    )
+    
+    if req.tool_reason:
+        sys_msg = f"You are an expert AI Prompt Engineer. A user wants to add a tool for this reason: '{req.tool_reason}'. Update the following persona prompt to explicitly mention how and when to use this tool appropriately. Output ONLY the updated prompt."
+    else:
+        sys_msg = f"You are an expert AI Prompt Engineer. A user wants to update their AI agent persona with this instruction: '{req.instruction}'. Carefully incorporate these changes into the following persona prompt. Output ONLY the updated prompt."
+        
+    messages = [
+        SystemMessage(content=sys_msg),
+        HumanMessage(content=f"CURRENT PROMPT:\n{current_prompt}")
+    ]
+    
+    response = llm.invoke(messages)
+    new_prompt = response.content.strip()
+    
+    # Save back to database
+    supabase_client.table("agents").update({"persona_prompt": new_prompt}).eq("id", agent_id).execute()
+    
+    return {"status": "success", "persona_prompt": new_prompt}
+
+class UpdateAgentProfileRequest(BaseModel):
+    company_name: str
+    description: str
+
+@app.put("/agents/{agent_id}/profile")
+async def update_agent_profile(agent_id: str, req: UpdateAgentProfileRequest, user_id: str = Depends(get_user_id)):
+    supabase_client.table("agents").update({
+        "company_name": req.company_name,
+        "description": req.description
+    }).eq("id", agent_id).eq("user_id", user_id).execute()
+    return {"status": "success"}
+
+@app.put("/agents/{agent_id}/prompt")
+async def update_agent_prompt(agent_id: str, req: PromptUpdateRequest, user_agent_id: str = Depends(get_agent_id)):
+    if agent_id != user_agent_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    supabase_client.table("agents").update({"persona_prompt": req.persona_prompt}).eq("id", agent_id).execute()
+    return {"status": "success"}
+
+@app.post("/onboarding", response_model=OnboardingResponse)
+async def onboarding_endpoint(req: OnboardingRequest, agent_id: str = Depends(get_agent_id)):
+    logger.info("Onboarding request for tenant %s", agent_id)
+    
+    # Check if already completed
+    agent_resp = supabase_client.table("agents").select("onboarding_status, persona_prompt").eq("id", agent_id).execute()
+    if agent_resp.data and agent_resp.data[0].get("onboarding_status") == "completed":
+        return OnboardingResponse(
+            response="Your onboarding is already complete!", 
+            status="completed",
+            persona=agent_resp.data[0].get("persona_prompt")
+        )
+        
+    # We will temporarily store onboarding chat history in a special session ID in the conversations table
+    session_id = f"onboard_{agent_id}"
+    
+    # Save user message
+    supabase_client.table("conversations").insert({
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "role": "user",
+        "message": req.message
+    }).execute()
+    
+    # Fetch history
+    history_resp = supabase_client.table("conversations").select("role, message")\
+        .eq("session_id", session_id)\
+        .eq("agent_id", agent_id)\
+        .order("created_at", desc=False).execute()
+        
+    chat_history = [{"role": row["role"], "content": row["message"]} for row in history_resp.data]
+    
+    # Run the graph
+    result = await run_onboarding(agent_id, chat_history)
+    
+    if result["status"] == "completed":
+        # Clean up onboarding history
+        supabase_client.table("conversations").delete().eq("session_id", session_id).eq("agent_id", agent_id).execute()
+        return OnboardingResponse(
+            response="Awesome! I have successfully generated your custom AI Sales Persona. You are ready to deploy!",
+            status="completed",
+            persona=result["generated_persona"]
+        )
+    else:
+        # Save assistant message
+        ai_reply = result["chat_history"][-1]["content"]
+        supabase_client.table("conversations").insert({
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "role": "assistant",
+            "message": ai_reply
+        }).execute()
+        return OnboardingResponse(
+            response=ai_reply,
+            status="interviewing"
+        )
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
-    Dual-Track Chat Endpoint
-    
-    Fast Track: RAG retrieval + LLM response
-    Slow Track: Judge Agent + Extractor (async)
+    Smart ReAct Chat Endpoint
     """
     try:
-        # Initialize session
-        if request.session_id not in chat_sessions:
-            chat_sessions[request.session_id] = []
-        
-        # Store user message
-        chat_sessions[request.session_id].append({
+        # Also save to DB
+        supabase_client.table("conversations").insert({
+            "agent_id": request.agent_id,
+            "session_id": request.session_id,
             "role": "user",
-            "content": request.message
-        })
+            "message": request.message
+        }).execute()
         
         logger.info("Query [%s]: %s", request.session_id[:12], request.message[:60])
         
-        # Build conversation history (last 6 messages for context window)
-        history = "\n".join(
-            f"{msg['role'].title()}: {msg['content']}"
-            for msg in chat_sessions[request.session_id][-6:]
+        # Call the Smart ReAct Agent
+        answer = await run_smart_chat(
+            agent_id=request.agent_id,
+            session_id=request.session_id,
+            message=request.message
         )
-        
-        # ============================================
-        # CONTEXTUAL RAG: Resolve pronouns using chat history
-        # ============================================
-        
-        vague_words = {"this", "that", "these", "those", "it", "them"}
-        has_vague_reference = bool(
-            vague_words & set(request.message.lower().split())
-        )
-        
-        if has_vague_reference and len(chat_sessions[request.session_id]) > 1:
-            recent_context = "\n".join(
-                f"{msg['role'].title()}: {msg['content']}"
-                for msg in chat_sessions[request.session_id][-4:]
-            )
-            contextual_query = f"{recent_context}\n\nCurrent question: {request.message}"
-            logger.debug("Contextual RAG: augmented query with history")
-        else:
-            contextual_query = request.message
-        
-        # ============================================
-        # FAST TRACK: RAG Retrieval
-        # ============================================
-        
-        query_embedding = embeddings.embed_query(contextual_query)
-        
-        result = supabase_client.rpc(
-            "match_documents",
-            {"query_embedding": query_embedding, "match_count": TOP_K_RESULTS},
-        ).execute()
-        
-        docs_data = result.data or []
-        logger.info("RAG retrieved %d documents", len(docs_data))
-        
-        # Build context and sources
-        if docs_data:
-            context_parts = []
-            sources: List[str] = []
-            for doc in docs_data:
-                context_parts.append(doc.get("content", ""))
-                source = doc.get("metadata", {}).get("source", "Unknown")
-                if source not in sources:
-                    sources.append(source)
-            context = "\n\n".join(context_parts)
-        else:
-            context = "No specific documentation found."
-            sources = []
-        
-        # Fetch lead profile to know what info we have/need
-        known_info = "New conversation - no info yet."
-        try:
-            lead_result = (
-                supabase_client.table("leads")
-                .select("company,email,name,role")
-                .eq("session_id", request.session_id)
-                .execute()
-            )
-            if lead_result.data:
-                lead = lead_result.data[0]
-                known = [
-                    f"{k.title()}: {lead[k]}"
-                    for k in ("name", "company", "email", "role")
-                    if lead.get(k) and str(lead[k]).strip()
-                ]
-                if known:
-                    known_info = " | ".join(known)
-        except Exception as exc:
-            logger.warning("Failed to fetch lead profile: %s", exc)
-        
-        # Generate response
-        prompt = SYSTEM_PROMPT.format(
-            known_info=known_info,
-            history=history,
-            context=context,
-            message=request.message,
-        )
-        
-        logger.debug("Generating LLM response...")
-        response = chat_model.invoke([SystemMessage(content=prompt)])
-        answer = response.content.strip()
-        
-        # Store bot response in memory
-        chat_sessions[request.session_id].append({
-            "role": "assistant",
-            "content": answer,
-        })
         
         logger.info("Response [%s]: %s", request.session_id[:12], answer[:80])
         
-        # ============================================
-        # Persist messages to Supabase conversations table
-        # ============================================
         now_iso = datetime.now(timezone.utc).isoformat()
 
         background_tasks.add_task(
@@ -929,19 +1028,22 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             request.message,
             answer,
             now_iso,
+            request.agent_id
         )
-        
-        # ============================================
-        # SLOW TRACK: Background LangGraph Workflow
-        # ============================================
-        
+        # Fetch chat history for BANT scoring graph
+        conv_resp = supabase_client.table("conversations").select("role,message").eq("session_id", request.session_id).order("created_at").execute()
+        chat_history = [{"role": row["role"], "content": row["message"]} for row in (conv_resp.data or [])]
+        chat_history.append({"role": "user", "content": request.message})
+        chat_history.append({"role": "assistant", "content": answer})
+
+        # Run background graph for BANT scoring
         background_tasks.add_task(
             run_agent_graph,
             request.session_id,
-            chat_sessions[request.session_id],
+            chat_history,
         )
         
-        return ChatResponse(response=answer, sources=sources)
+        return ChatResponse(response=answer, sources=["Knowledge Base"]) # Sources handled by the tool
         
     except Exception as e:
         logger.error("Chat error: %s", e, exc_info=True)
@@ -957,6 +1059,7 @@ def _persist_messages(
     user_message: str,
     assistant_message: str,
     timestamp: str,
+    agent_id: str,
 ) -> None:
     """Write user + assistant messages to the ``conversations`` table and
     update the lead's ``last_active`` timestamp so time-decay works correctly."""
@@ -970,7 +1073,7 @@ def _persist_messages(
         supabase_client.table("leads").update({
             "last_active": timestamp,
             "updated_at": timestamp,
-        }).eq("session_id", session_id).execute()
+        }).eq("session_id", session_id).eq("agent_id", agent_id).execute()
     except Exception as exc:
         logger.warning("Failed to persist conversation: %s", exc)
 

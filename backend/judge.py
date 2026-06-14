@@ -44,7 +44,8 @@ supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Judge System Prompt
 # ============================================
 
-JUDGE_PROMPT = """You are the Senior Sales Judge for Team Defaulters, a cloud infrastructure company.
+def get_judge_prompt(company_name: str) -> str:
+    return f"""You are the Senior Sales Judge for {company_name}.
 
 Your job is to analyze sales conversations and score leads using the BANT framework:
 
@@ -184,8 +185,17 @@ async def analyze_lead(session_id: str, chat_history: List[Dict[str, str]]):
         conversation_text = format_conversation(chat_history)
         
         # Step 2: Call Judge Model
+        # Fetch agent identity based on session_id
+        lead_resp = supabase_client.table("conversations").select("agent_id").eq("session_id", session_id).limit(1).execute()
+        company_name = "Our Company"
+        if lead_resp.data:
+            agent_id = lead_resp.data[0]["agent_id"]
+            agent_resp = supabase_client.table("agents").select("company_name").eq("id", agent_id).execute()
+            if agent_resp.data:
+                company_name = agent_resp.data[0]["company_name"]
+
         messages = [
-            SystemMessage(content=JUDGE_PROMPT),
+            SystemMessage(content=get_judge_prompt(company_name)),
             HumanMessage(content=f"Conversation:\n{conversation_text}\n\nAnalyze this lead:")
         ]
         
