@@ -1,22 +1,38 @@
-# Branch Summary
+# SalesGPT - SaaS Transformation Branch Summary
 
-This document serves as a comprehensive summary of all the changes, refactors, and UI/UX improvements made in this branch.
+This branch (`saas-transformation`) represents a massive architectural and visual overhaul of the SalesGPT project, pivoting it from a single-tenant prototype into a production-ready, multi-tenant SaaS application with a premium aesthetic and advanced AI workflows.
 
-## 1. UI/UX Premium Restructure
-- **Complete Aesthetic Overhaul**: Transitioned the entire frontend from a basic Tailwind design to a premium SaaS "Glassmorphism" aesthetic.
-- **Dynamic Light/Dark Mode**: Replaced hardcoded dark mode opacity classes (e.g., `bg-slate-900/60`) with scalable semantic classes (`glass-panel`, `glass-surface`, `text-white`, `text-slate-200`) across all components (Dashboard, AgentHub, AgentConfig). This ensures that the UI gracefully adapts to Light Mode with soft-white frosted glass and Dark Mode with deep, sleek glass.
-- **Interactive Micro-animations**: Upgraded `ChatWidget`, agent cards, and buttons with Framer Motion animations to provide a dynamic and responsive feel.
-- **Professional Notifications**: Replaced all native browser `alert()` popups with `react-hot-toast` for smooth, non-intrusive bottom-right slide-in notifications.
+Below is the complete breakdown of all changes made compared to the `main` branch.
 
-## 2. Stateless Backend Architecture
-- **Eliminated `chat_sessions`**: Removed the redundant in-memory `chat_sessions` dictionary from the FastAPI router (`backend/main.py`). The API is now completely stateless and safe for multi-worker deployment.
-- **LangGraph Native Memory**: Fully transitioned to relying on LangGraph's PostgreSQL checkpointer (`AsyncPostgresSaver`) for memory management within the agent workflow.
-- **Dead Code Cleanup**: Removed approximately 100 lines of obsolete "Contextual RAG" query expansion code that was lingering in the `/chat` endpoint.
-- **Background Task Refactoring**: Updated the `run_agent_graph` BANT scoring background task to fetch chat history natively from the Supabase `conversations` table just-in-time.
+---
 
-## 3. Critical Bug Fixes
-- **Agent Prompt Update Error**: Fixed a `NameError` crash by properly importing `HumanMessage` in `backend/main.py`, allowing users to seamlessly update their agent personas.
-- **Test Agent 422 Error**: Fixed the `ChatWidget.jsx` component inside the dashboard. It was previously sending an `undefined` agent ID because it failed to resolve the `activeAgentId` in Test Mode.
-- **Test Agent Animation Override**: Fixed the framer-motion logic in `ChatWidget.jsx` so that the popup animation is bypassed when testing inside the Dashboard, but preserved when the widget is natively embedded on client sites.
+## 1. Frontend & UI/UX (Premium SaaS Aesthetics)
+- **Glassmorphism Design System**: Rewrote `frontend/src/index.css` to implement a sophisticated `glass-panel` and `glass-surface` design system with dynamic variables for seamless Light/Dark mode transitions.
+- **`Dashboard.jsx` (Massive Refactor)**: Completely overhauled the analytics dashboard. Added dynamic charts, pipeline funnel visualizations, and score distributions. Repositioned the Test Agent drawer and Agent Configuration panel to use the new premium styling. Replaced all native browser alerts with `react-hot-toast` notifications.
+- **`AgentHub.jsx` (NEW)**: Created a centralized hub for managing multiple AI agents. Features elegant grid cards displaying agent status, capabilities, and settings.
+- **`Auth.jsx` & `Onboarding.jsx` (NEW)**: Built a complete multi-tenant authentication and company onboarding flow to capture company details, website URLs, and initial knowledge base data.
+- **`ChatWidget.jsx`**: Upgraded the embeddable chat widget with Framer Motion animations. Optimized its behavior so it scales seamlessly whether it's natively embedded on a client website or previewed in the Dashboard's Test Mode.
+- **Routing**: Updated `App.jsx` to handle the new secure routes (`/auth`, `/onboarding`, `/agents`, `/dashboard`).
 
-All code has successfully passed production builds (`npm run build`) and the backend is running seamlessly with zero known errors.
+---
+
+## 2. Backend & Agent Architecture (Stateless & LangGraph)
+- **Stateless API Routing (`main.py`)**: Stripped out legacy, stateful in-memory dictionaries (like `chat_sessions`). The FastAPI backend is now completely stateless and scalable, safely passing session IDs directly to database and agent layers. 
+- **LangGraph Checkpointer (`agent.py` - NEW)**: Replaced basic LangChain memory with LangGraph's robust `AsyncPostgresSaver`. The `run_smart_chat` agent now intrinsically remembers conversation history, eliminating the need for manual "Contextual RAG" query expansion.
+- **Multi-Tenant Endpoints**: Updated all API endpoints (analytics, chat, documents, leads) to enforce multi-tenant isolation. Endpoints now require and validate an `agent_id` against the authenticated user.
+- **Onboarding Pipeline (`onboarding_graph.py` - NEW)**: Built an automated LangGraph workflow that crawls a newly registered company's website and auto-generates their initial knowledge base vector embeddings.
+- **Widget Delivery (`widget.js` - NEW)**: Created a dynamic, vanilla JS widget script that clients can copy-paste into their HTML (`<script src=".../widget.js">`) to inject the React ChatWidget iframe into their live websites.
+- **Legacy Cleanup**: Deleted obsolete scripts (`test_backend.py` and `backend/verify_data.py`).
+
+---
+
+## 3. Database & Infrastructure
+- **`schema.sql` Overhaul**: Upgraded the entire PostgreSQL schema to support multi-tenancy.
+  - Added `user_id` and `agent_id` columns to `leads`, `conversations`, and `documents` tables to ensure strict data isolation.
+  - Added RLS (Row Level Security) policies to prevent cross-tenant data bleed.
+- **Supabase Local Initialization**: Added `supabase/config.toml` to manage local Supabase Edge functions, database migrations, and persistent storage configurations.
+
+---
+
+### Conclusion
+This branch successfully elevates SalesGPT into a fully deployable SaaS platform with robust tenant isolation, advanced agentic memory via LangGraph, and a highly polished, responsive user interface.
